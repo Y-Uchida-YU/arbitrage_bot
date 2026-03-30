@@ -122,6 +122,11 @@ class Settings(BaseSettings):
     global_stale_quote_stop_seconds: int = 3
     market_data_staleness_stop_seconds: int = 10
     health_snapshot_stale_seconds: int = 30
+    live_min_fee_confidence_status: str = "chain_verified"
+    live_min_balance_confidence_status: str = "wallet_verified"
+    balance_verify_tolerance_abs: Decimal = Decimal("0.01")
+    balance_verify_tolerance_ratio: Decimal = Decimal("0.01")
+    hyperevm_wallet_address: str = ""
 
     # Depeg / abnormal defaults
     depeg_threshold_bps: int = 50
@@ -169,6 +174,24 @@ class Settings(BaseSettings):
         if normalized not in {"stopped", "paper", "live"}:
             return RunMode.PAPER
         return RunMode(normalized)
+
+    @field_validator("live_min_fee_confidence_status", mode="before")
+    @classmethod
+    def _normalize_fee_confidence_status(cls, value: str) -> str:
+        allowed = {"unknown", "fallback_only", "config_only", "venue_declared", "acct_verified", "chain_verified"}
+        normalized = str(value).strip().lower()
+        if normalized not in allowed:
+            return "chain_verified"
+        return normalized
+
+    @field_validator("live_min_balance_confidence_status", mode="before")
+    @classmethod
+    def _normalize_balance_confidence_status(cls, value: str) -> str:
+        allowed = {"unknown", "internal_ok", "db_inventory_ok", "wallet_verified", "venue_verified"}
+        normalized = str(value).strip().lower()
+        if normalized not in allowed:
+            return "wallet_verified"
+        return normalized
 
     @property
     def allowlisted_tokens_set(self) -> set[str]:

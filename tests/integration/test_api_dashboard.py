@@ -66,6 +66,15 @@ def test_dashboard_and_api_bootstrap(tmp_path: Path) -> None:
         assert route_health.status_code == 200
         assert isinstance(route_health.json(), list)
 
+        readiness_summary = client.get("/api/readiness/summary")
+        assert readiness_summary.status_code == 200
+        summary = readiness_summary.json()
+        assert "red_count" in summary
+
+        readiness_routes = client.get("/api/readiness/routes")
+        assert readiness_routes.status_code == 200
+        assert isinstance(readiness_routes.json(), list)
+
 
 def test_control_and_live_dry_run_flow(tmp_path: Path) -> None:
     with _boot_client(tmp_path, live_enabled=True, use_mock_market_data=True) as client:
@@ -161,12 +170,28 @@ def test_observation_recording_and_backtest_flow(tmp_path: Path) -> None:
         assert snapshots.status_code == 200
         snapshot_rows = snapshots.json()
         assert isinstance(snapshot_rows, list)
+        if not snapshot_rows:
+            for _ in range(15):
+                time.sleep(0.2)
+                snapshots = client.get("/api/market-snapshots")
+                assert snapshots.status_code == 200
+                snapshot_rows = snapshots.json()
+                if snapshot_rows:
+                    break
         assert len(snapshot_rows) >= 1
 
         route_health = client.get("/api/route-health-snapshots")
         assert route_health.status_code == 200
         route_health_rows = route_health.json()
         assert isinstance(route_health_rows, list)
+        if not route_health_rows:
+            for _ in range(10):
+                time.sleep(0.2)
+                route_health = client.get("/api/route-health-snapshots")
+                assert route_health.status_code == 200
+                route_health_rows = route_health.json()
+                if route_health_rows:
+                    break
         assert len(route_health_rows) >= 1
 
         routes = client.get("/api/routes")
@@ -191,6 +216,14 @@ def test_observation_recording_and_backtest_flow(tmp_path: Path) -> None:
         assert run_body["status"] == "completed"
         run_id = run_body["run_id"]
 
+        snapshot_payload = dict(payload)
+        snapshot_payload["replay_mode"] = "market_snapshots"
+        snapshot_run = client.post("/api/backtest/run", json=snapshot_payload)
+        assert snapshot_run.status_code == 200
+        snapshot_body = snapshot_run.json()
+        assert snapshot_body["status"] == "completed"
+        assert snapshot_body["replay_mode"] == "market_snapshots"
+
         runs = client.get("/api/backtest/runs")
         assert runs.status_code == 200
         assert isinstance(runs.json(), list)
@@ -208,10 +241,18 @@ def test_observation_recording_and_backtest_flow(tmp_path: Path) -> None:
         assert "trades" in body
         assert isinstance(body["trades"], list)
 
+        readiness = client.get("/api/readiness/routes")
+        assert readiness.status_code == 200
+        rows = readiness.json()
+        assert isinstance(rows, list)
+        assert len(rows) >= 1
+        assert "readiness_grade" in rows[0]
+
         dashboard = client.get("/")
         assert dashboard.status_code == 200
         assert "Backtest Runs" in dashboard.text
         assert "Backtest Signal Timeline" in dashboard.text
+        assert "Route Readiness" in dashboard.text
 
 
 def test_restart_restores_route_runtime_state(tmp_path: Path) -> None:
@@ -239,6 +280,31 @@ def test_restart_restores_route_runtime_state(tmp_path: Path) -> None:
         target = next((x for x in rows if x["route_id"] == route_id), None)
         assert target is not None
         assert target["route_paused"] is True
+
+
+def test_unsupported_route_stays_red_in_readiness(tmp_path: Path) -> None:
+    with _boot_client(tmp_path, live_enabled=False, use_mock_market_data=False) as client:
+        time.sleep(1.2)
+        readiness = client.get("/api/readiness/routes")
+        assert readiness.status_code == 200
+        rows = readiness.json()
+        assert isinstance(rows, list)
+        assert len(rows) >= 1
+        assert any(
+            row["readiness_grade"] == "red" and row["support_status"] != "supported"
+            for row in rows
+        )
+
+
+def test_fallback_fee_route_is_not_green(tmp_path: Path) -> None:
+    with _boot_client(tmp_path, live_enabled=False, use_mock_market_data=True) as client:
+        time.sleep(1.2)
+        readiness = client.get("/api/readiness/routes")
+        assert readiness.status_code == 200
+        rows = readiness.json()
+        target = [row for row in rows if row["strategy"] == "base_virtual_shadow"]
+        assert target
+        assert all(row["readiness_grade"] != "green" for row in target)
 
 
 def test_schema_guard_requires_flag_when_missing_schema(tmp_path: Path) -> None:

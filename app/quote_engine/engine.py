@@ -10,7 +10,42 @@ from app.exchanges.errors import QuoteUnavailableError
 from app.models.core import Route
 from app.quote_engine.edge import ModeledEdgeCalculator
 from app.quote_engine.types import RouteQuote
+from app.utils.confidence import min_fee_confidence
 from app.utils.decimal_math import to_bps
+
+
+def _cex_fee_status_from_provenance(provenance: str) -> str:
+    normalized = provenance.strip().lower()
+    if normalized == "fallback_only":
+        return "fallback_only"
+    if normalized in {"config_only"}:
+        return "config_only"
+    if normalized in {"venue_declared", "symbol_override", "venue_default"}:
+        return "venue_declared"
+    if normalized in {"acct_verified", "account_verified"}:
+        return "acct_verified"
+    return "unknown"
+
+
+def _dex_fee_status(
+    *,
+    pool_state: dict[str, Decimal | str | bool],
+    configured_pool_fee_tier: int,
+    source_type: str,
+) -> tuple[str, str]:
+    if source_type == "mock":
+        return "config_only", "mock_config"
+
+    pool_fee_raw = pool_state.get("pool_fee_tier")
+    try:
+        pool_fee = int(Decimal(str(pool_fee_raw)))
+    except Exception:
+        pool_fee = 0
+    if pool_fee <= 0:
+        return "config_only", "config_only"
+    if configured_pool_fee_tier > 0 and pool_fee != configured_pool_fee_tier:
+        return "unknown", "pool_fee_mismatch"
+    return "chain_verified", "chain_pool_fee"
 
 
 class HyperDexDexQuoteEngine:
@@ -84,9 +119,24 @@ class HyperDexDexQuoteEngine:
 
         pool_health_a = await adapter_a.is_pool_healthy(route.pool_a)
         pool_health_b = await adapter_b.is_pool_healthy(route.pool_b)
+        pool_state_a = await adapter_a.get_pool_state(route.pool_a)
+        pool_state_b = await adapter_b.get_pool_state(route.pool_b)
         liq_a = await adapter_a.get_liquidity_snapshot(route.pool_a)
         liq_b = await adapter_b.get_liquidity_snapshot(route.pool_b)
         quote_match_ok = await self._quote_match_hyper(route, amount_in, out_leg1, adapter_a)
+        quote_match_status = "matched" if quote_match_ok else "mismatch"
+
+        fee_status_a, fee_provenance_a = _dex_fee_status(
+            pool_state=pool_state_a,
+            configured_pool_fee_tier=route.pool_fee_tier_a,
+            source_type="mock" if self.settings.use_mock_market_data else "real",
+        )
+        fee_status_b, fee_provenance_b = _dex_fee_status(
+            pool_state=pool_state_b,
+            configured_pool_fee_tier=route.pool_fee_tier_b,
+            source_type="mock" if self.settings.use_mock_market_data else "real",
+        )
+        fee_known_status = min_fee_confidence([fee_status_a, fee_status_b])
         smaller_pool_liquidity_usdc = min(
             liq_a.get("liquidity_usd", Decimal("0")),
             liq_b.get("liquidity_usd", Decimal("0")),
@@ -120,9 +170,12 @@ class HyperDexDexQuoteEngine:
                 "quoter_fee_tier_b": str(route.quoter_fee_tier_b),
                 "economic_fee_bps_a": str(route.economic_fee_bps_a),
                 "economic_fee_bps_b": str(route.economic_fee_bps_b),
-                "fee_known": "true",
-                "fee_source": "configured_economic_fee",
+                "fee_known": str(fee_known_status != "unknown").lower(),
+                "fee_known_status": fee_known_status,
+                "fee_source": fee_provenance_a,
+                "fee_provenance": f"{fee_provenance_a}|{fee_provenance_b}",
                 "quote_match": str(quote_match_ok).lower(),
+                "quote_match_status": quote_match_status,
                 "quote_source": "mock" if self.settings.use_mock_market_data else "real",
                 "leg1_amount_out": str(out_leg1),
                 "leg2_amount_out": str(out_leg2),
@@ -202,8 +255,13 @@ class ShadowCexDexQuoteEngine:
         cex_bid, _cex_ask = await cex.get_best_bid_ask("VIRTUALUSDC")
 
         expected_usdc = virtual_amount * cex_bid
-        cex_fee_bps = await cex.get_trading_fee("VIRTUALUSDC", side="sell", maker_or_taker="taker")
+        cex_fee_bps, cex_fee_provenance = await cex.get_trading_fee_details(
+            "VIRTUALUSDC",
+            side="sell",
+            maker_or_taker="taker",
+        )
         cex_fee_cost = expected_usdc * Decimal(cex_fee_bps) / Decimal(10000)
+        dex_fee_cost = amount_in_usdc * Decimal(route.economic_fee_bps_b) / Decimal(10000)
 
         gas_units = await dex.estimate_gas({"route": route.name})
         gas_cost_usdc = self._estimate_gas_usdc(gas_units)
@@ -214,7 +272,7 @@ class ShadowCexDexQuoteEngine:
         edge = self.edge_calculator.calculate(
             initial_amount=amount_in_usdc,
             expected_final_amount=expected_usdc,
-            dex_fee_cost=cex_fee_cost,
+            dex_fee_cost=cex_fee_cost + dex_fee_cost,
             gas_cost=gas_cost_usdc,
         )
 
@@ -223,7 +281,16 @@ class ShadowCexDexQuoteEngine:
         persisted_seconds = self._update_persistence(route.id, edge.modeled_net_edge_bps)
         pool_health = await dex.is_pool_healthy(route.pool_b)
         pool_liq = await dex.get_liquidity_snapshot(route.pool_b)
+        pool_state = await dex.get_pool_state(route.pool_b)
         quote_match_ok = await self._quote_match_shadow(dex, amount_in_usdc, virtual_amount, route)
+        quote_match_status = "matched" if quote_match_ok else "mismatch"
+        dex_fee_status, dex_fee_provenance = _dex_fee_status(
+            pool_state=pool_state,
+            configured_pool_fee_tier=route.pool_fee_tier_b,
+            source_type="mock" if self.settings.use_mock_market_data else "real",
+        )
+        cex_fee_status = _cex_fee_status_from_provenance(cex_fee_provenance)
+        fee_known_status = min_fee_confidence([cex_fee_status, dex_fee_status])
 
         return RouteQuote(
             route_id=route.id,
@@ -248,17 +315,16 @@ class ShadowCexDexQuoteEngine:
                 "pool_fee_tier_b": str(route.pool_fee_tier_b),
                 "quoter_fee_tier_b": str(route.quoter_fee_tier_b),
                 "economic_fee_bps_b": str(route.economic_fee_bps_b),
-                "fee_known": "true",
-                "fee_source": "fallback" if cex_fee_bps in {
-                    self.settings.bybit_maker_fee_bps_fallback,
-                    self.settings.bybit_taker_fee_bps_fallback,
-                    self.settings.mexc_maker_fee_bps_fallback,
-                    self.settings.mexc_taker_fee_bps_fallback,
-                } else "venue_specific",
+                "fee_known": str(fee_known_status != "unknown").lower(),
+                "fee_known_status": fee_known_status,
+                "fee_source": cex_fee_provenance,
+                "fee_provenance": f"cex:{cex_fee_provenance}|dex:{dex_fee_provenance}",
                 "quote_match": str(quote_match_ok).lower(),
+                "quote_match_status": quote_match_status,
                 "quote_source": "mock" if self.settings.use_mock_market_data else "real",
                 "cex_bid": str(cex_bid),
                 "cex_fee_bps": str(cex_fee_bps),
+                "dex_fee_cost_usdc": str(dex_fee_cost),
                 "dex_virtual_amount": str(virtual_amount),
                 "initial_amount": str(amount_in_usdc),
                 "final_amount": str(expected_usdc),

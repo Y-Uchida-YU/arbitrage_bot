@@ -20,6 +20,10 @@ class CEXAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_trading_fee_details(self, symbol: str, side: str, maker_or_taker: str) -> tuple[int, str]:
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_market_status(self, symbol: str) -> str:
         raise NotImplementedError
 

@@ -22,6 +22,10 @@
       <div class="kpi"><div class="label">Backtest Runs</div><div class="value mono">{{ overview.backtest_runs_count if overview.backtest_runs_count is defined else 0 }}</div></div>
       <div class="kpi"><div class="label">Persistent Cooldowns</div><div class="value mono">{{ overview.persistent_cooldown_routes_count if overview.persistent_cooldown_routes_count is defined else 0 }}</div></div>
       <div class="kpi"><div class="label">Fatal Paused Routes</div><div class="value mono">{{ overview.fatal_paused_routes_count if overview.fatal_paused_routes_count is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Readiness Red</div><div class="value mono">{{ readiness_summary.red_count if readiness_summary is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Readiness Yellow</div><div class="value mono">{{ readiness_summary.yellow_count if readiness_summary is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Readiness Green</div><div class="value mono">{{ readiness_summary.green_count if readiness_summary is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Latest Backtest Mode</div><div class="value">{{ latest_backtest_meta.replay_mode if latest_backtest_meta is defined and latest_backtest_meta.replay_mode is defined else 'n/a' }}</div></div>
     </article>
 
     <article class="card wide">
@@ -55,9 +59,10 @@
       <h3>Latest Backtest Summary</h3>
       {% if latest_backtest %}
       <table>
-        <thead><tr><th>Sim PnL</th><th>Eligible</th><th>Blocked</th><th>Hit Rate</th><th>Max DD</th></tr></thead>
+        <thead><tr><th>Mode</th><th>Sim PnL</th><th>Eligible</th><th>Blocked</th><th>Hit Rate</th><th>Max DD</th></tr></thead>
         <tbody>
           <tr>
+            <td>{{ latest_backtest_meta.replay_mode if latest_backtest_meta is defined and latest_backtest_meta.replay_mode is defined else 'opportunities' }}</td>
             <td class="mono">{{ latest_backtest.simulated_pnl }}</td>
             <td class="mono">{{ latest_backtest.eligible_count }}</td>
             <td class="mono">{{ latest_backtest.blocked_count }}</td>
@@ -112,6 +117,19 @@
           {% for row in blocked_summary %}
             <tr><td>{{ row.blocked_reason }}</td><td class="mono">{{ row.count }}</td></tr>
           {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card half">
+      <h3>Readiness Summary</h3>
+      <table>
+        <thead><tr><th>Grade</th><th>Count</th></tr></thead>
+        <tbody>
+          <tr><td>red</td><td class="mono">{{ readiness_summary.red_count if readiness_summary is defined else 0 }}</td></tr>
+          <tr><td>yellow</td><td class="mono">{{ readiness_summary.yellow_count if readiness_summary is defined else 0 }}</td></tr>
+          <tr><td>green</td><td class="mono">{{ readiness_summary.green_count if readiness_summary is defined else 0 }}</td></tr>
+          <tr><td>latest mode</td><td>{{ readiness_summary.latest_backtest_mode if readiness_summary is defined else '-' }}</td></tr>
         </tbody>
       </table>
     </article>
@@ -211,6 +229,53 @@
     </article>
 
     <article class="card wide">
+      <h3>Route Readiness</h3>
+      <table>
+        <thead><tr><th>Route</th><th>Grade</th><th>Support</th><th>Fee</th><th>Balance</th><th>Quote Match</th><th>Obs</th><th>Quote Unavail Rate</th><th>Backtest Mode</th><th>Blockers</th></tr></thead>
+        <tbody>
+          {% for row in readiness_rows %}
+            <tr>
+              <td class="mono">{{ row.route_id }}</td>
+              <td>{{ row.readiness_grade }}</td>
+              <td>{{ row.support_status }}</td>
+              <td>{{ row.fee_known_status }}</td>
+              <td>{{ row.balance_match_status }}</td>
+              <td>{{ row.quote_match_status }}</td>
+              <td class="mono">{{ row.observation_count }}</td>
+              <td class="mono">{{ row.quote_unavailable_rate }}</td>
+              <td>{{ row.last_backtest_mode }}</td>
+              <td>{{ row.readiness_blockers|join(', ') }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card half">
+      <h3>Fee Confidence Distribution</h3>
+      <table>
+        <thead><tr><th>Status</th><th>Count</th></tr></thead>
+        <tbody>
+          {% for key, value in fee_confidence_distribution.items() %}
+            <tr><td>{{ key }}</td><td class="mono">{{ value }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card half">
+      <h3>Balance Confidence Distribution</h3>
+      <table>
+        <thead><tr><th>Status</th><th>Count</th></tr></thead>
+        <tbody>
+          {% for key, value in balance_confidence_distribution.items() %}
+            <tr><td>{{ key }}</td><td class="mono">{{ value }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card wide">
       <h3>Backtest Runs</h3>
       <table>
         <thead><tr><th>Time</th><th>Run ID</th><th>Strategy</th><th>Route</th><th>Parameter Set</th><th>Status</th><th>Window</th></tr></thead>
@@ -231,9 +296,9 @@
     </article>
 
     <article class="card wide">
-      <h3>Backtest Results (Route / Parameter Comparison)</h3>
+      <h3>Backtest Results (Route / Parameter / Mode Comparison)</h3>
       <table>
-        <thead><tr><th>Time</th><th>Run ID</th><th>Route</th><th>Parameter Set</th><th>Sim PnL</th><th>Eligible</th><th>Blocked</th><th>Hit Rate</th></tr></thead>
+        <thead><tr><th>Time</th><th>Run ID</th><th>Route</th><th>Parameter Set</th><th>Replay Mode</th><th>Sim PnL</th><th>Eligible</th><th>Blocked</th><th>Hit Rate</th></tr></thead>
         <tbody>
           {% for row in backtest_result_rows %}
             <tr>
@@ -241,6 +306,7 @@
               <td class="mono">{{ row.backtest_run_id }}</td>
               <td class="mono">{{ row.route_id if row.route_id else '-' }}</td>
               <td class="mono">{{ row.parameter_set_id if row.parameter_set_id else '-' }}</td>
+              <td>{{ row.replay_mode }}</td>
               <td class="mono">{{ row.simulated_pnl }}</td>
               <td class="mono">{{ row.eligible_count }}</td>
               <td class="mono">{{ row.blocked_count }}</td>

@@ -12,7 +12,7 @@ Safety-priority crypto arbitrage framework designed for **risk control before ex
 
 - Real-data observation with conservative blocking semantics
 - Observation persistence for post-analysis
-- Replay/backtest on saved data for threshold validation
+- Replay/backtest on saved data for threshold validation (`opportunities` + `market_snapshots`)
 - Live-readiness decision support while keeping real submit disabled
 
 ## Safety Principles
@@ -118,6 +118,9 @@ Even after switching to live mode, initial implementation keeps real submission 
 - `GET /api/metrics`
 - `GET /api/routes`
 - `GET /api/route-health`
+- `GET /api/readiness/summary`
+- `GET /api/readiness/routes`
+- `GET /api/readiness/routes/{route_id}`
 - `GET /api/blocked-reason-summary`
 - `GET /api/cooldowns`
 - `GET /api/market-snapshots`
@@ -146,8 +149,18 @@ python -m app.main backtest \
   --route-id <route_id> \
   --pair USDC/USDt0 \
   --start-ts 2026-03-29T00:00:00+00:00 \
-  --end-ts 2026-03-30T00:00:00+00:00
+  --end-ts 2026-03-30T00:00:00+00:00 \
+  --replay-mode market_snapshots
 ```
+
+## Fee / Balance Confidence
+
+- Fee confidence (`fee_known_status`) is explicit and conservative:
+  - `unknown` / `fallback_only` / `config_only` / `venue_declared` / `acct_verified` / `chain_verified`
+- Balance confidence (`balance_match_status`) is explicit and conservative:
+  - `unknown` / `mismatch` / `internal_ok` / `db_inventory_ok` / `wallet_verified` / `venue_verified`
+- Unknown or unverified confidence is blocked for tradability and surfaced in readiness blockers.
+- `green` readiness grade is still not permission to enable live submit; human review remains mandatory.
 
 ## Environment Variables
 
@@ -170,6 +183,11 @@ High-impact variables:
 - `SHADOW_MIN_NET_EDGE_BPS`
 - `GLOBAL_STALE_QUOTE_STOP_SECONDS`
 - `HEALTH_SNAPSHOT_STALE_SECONDS`
+- `LIVE_MIN_FEE_CONFIDENCE_STATUS`
+- `LIVE_MIN_BALANCE_CONFIDENCE_STATUS`
+- `BALANCE_VERIFY_TOLERANCE_ABS`
+- `BALANCE_VERIFY_TOLERANCE_RATIO`
+- `HYPEREVM_WALLET_ADDRESS`
 - `HYPEREVM_RAMSES_QUOTER_FEE_TIER` / `HYPEREVM_RAMSES_POOL_FEE_TIER` / `HYPEREVM_RAMSES_ECONOMIC_FEE_BPS`
 - `HYPEREVM_HYBRA_QUOTER_FEE_TIER` / `HYPEREVM_HYBRA_POOL_FEE_TIER` / `HYPEREVM_HYBRA_ECONOMIC_FEE_BPS`
 

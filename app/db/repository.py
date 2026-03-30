@@ -184,24 +184,85 @@ class Repository:
         has_param = await self.session.scalar(select(func.count(ParameterSet.id)))
         if has_param:
             return
-        self.session.add(
-            ParameterSet(
-                name="default_conservative",
-                strategy="hyperevm_dex_dex",
-                description="Conservative baseline for commissioning replay/backtest",
-                is_default=True,
-                params_json=json.dumps(
-                    {
-                        "min_modeled_edge_bps": 30,
-                        "max_slippage_bps": 2,
-                        "max_quote_age_seconds": 3,
-                        "gas_penalty_bps": 2,
-                        "quote_drift_buffer_bps": 3,
-                        "latency_penalty_bps": 2,
-                        "liquidity_cap_ratio": "0.0002",
-                    }
+        self.session.add_all(
+            [
+                ParameterSet(
+                    name="default_conservative",
+                    strategy="hyperevm_dex_dex",
+                    description="Conservative baseline for commissioning replay/backtest",
+                    is_default=True,
+                    params_json=json.dumps(
+                        {
+                            "min_modeled_edge_bps": 30,
+                            "max_slippage_bps": 2,
+                            "max_quote_age_seconds": 3,
+                            "gas_penalty_bps": 2,
+                            "quote_drift_buffer_bps": 3,
+                            "latency_penalty_bps": 2,
+                            "liquidity_cap_ratio": "0.0002",
+                            "min_fee_confidence_status": "fallback_only",
+                            "min_balance_confidence_status": "internal_ok",
+                        }
+                    ),
                 ),
-            )
+                ParameterSet(
+                    name="default_observation_lenient",
+                    strategy="hyperevm_dex_dex",
+                    description="Observation-focused replay with permissive thresholds but conservative penalties",
+                    is_default=False,
+                    params_json=json.dumps(
+                        {
+                            "min_modeled_edge_bps": 10,
+                            "max_slippage_bps": 10,
+                            "max_quote_age_seconds": 8,
+                            "gas_penalty_bps": 2,
+                            "quote_drift_buffer_bps": 3,
+                            "latency_penalty_bps": 2,
+                            "liquidity_cap_ratio": "0.0002",
+                            "min_fee_confidence_status": "fallback_only",
+                            "min_balance_confidence_status": "internal_ok",
+                        }
+                    ),
+                ),
+                ParameterSet(
+                    name="default_shadow_review",
+                    strategy="base_virtual_shadow",
+                    description="Shadow review profile with conservative fee/balance verification requirements",
+                    is_default=True,
+                    params_json=json.dumps(
+                        {
+                            "min_modeled_edge_bps": 125,
+                            "max_slippage_bps": 10,
+                            "max_quote_age_seconds": 5,
+                            "gas_penalty_bps": 3,
+                            "quote_drift_buffer_bps": 4,
+                            "latency_penalty_bps": 3,
+                            "liquidity_cap_ratio": "0.0002",
+                            "min_fee_confidence_status": "fallback_only",
+                            "min_balance_confidence_status": "db_inventory_ok",
+                        }
+                    ),
+                ),
+                ParameterSet(
+                    name="default_live_readiness_gate",
+                    strategy="hyperevm_dex_dex",
+                    description="Strict readiness gate profile for live migration review",
+                    is_default=False,
+                    params_json=json.dumps(
+                        {
+                            "min_modeled_edge_bps": 30,
+                            "max_slippage_bps": 2,
+                            "max_quote_age_seconds": 3,
+                            "gas_penalty_bps": 3,
+                            "quote_drift_buffer_bps": 4,
+                            "latency_penalty_bps": 3,
+                            "liquidity_cap_ratio": "0.0002",
+                            "min_fee_confidence_status": "chain_verified",
+                            "min_balance_confidence_status": "wallet_verified",
+                        }
+                    ),
+                ),
+            ]
         )
 
     async def get_runtime_control(self) -> RuntimeControl:
@@ -554,6 +615,29 @@ class Repository:
         rows = await self.session.scalars(query.order_by(MarketSnapshot.timestamp.desc()).limit(limit))
         return list(rows)
 
+    async def list_market_snapshots_for_backtest(
+        self,
+        strategy: str,
+        route_id: str,
+        pair: str,
+        start_ts: datetime,
+        end_ts: datetime,
+        limit: int = 500000,
+    ) -> list[MarketSnapshot]:
+        rows = await self.session.scalars(
+            select(MarketSnapshot)
+            .where(
+                MarketSnapshot.strategy == strategy,
+                MarketSnapshot.route_id == route_id,
+                MarketSnapshot.pair == pair,
+                MarketSnapshot.timestamp >= start_ts,
+                MarketSnapshot.timestamp <= end_ts,
+            )
+            .order_by(MarketSnapshot.timestamp.asc())
+            .limit(limit)
+        )
+        return list(rows)
+
     async def list_route_health_snapshots(
         self,
         route_id: str | None = None,
@@ -564,6 +648,109 @@ class Repository:
             query = query.where(RouteHealthSnapshot.route_id == route_id)
         rows = await self.session.scalars(query.order_by(RouteHealthSnapshot.timestamp.desc()).limit(limit))
         return list(rows)
+
+    async def list_route_health_snapshots_for_backtest(
+        self,
+        route_id: str,
+        start_ts: datetime,
+        end_ts: datetime,
+        limit: int = 500000,
+    ) -> list[RouteHealthSnapshot]:
+        rows = await self.session.scalars(
+            select(RouteHealthSnapshot)
+            .where(
+                RouteHealthSnapshot.route_id == route_id,
+                RouteHealthSnapshot.timestamp >= start_ts,
+                RouteHealthSnapshot.timestamp <= end_ts,
+            )
+            .order_by(RouteHealthSnapshot.timestamp.asc())
+            .limit(limit)
+        )
+        return list(rows)
+
+    async def market_snapshot_stats_for_route(self, route_id: str) -> dict[str, object]:
+        count_value = await self.session.scalar(
+            select(func.count(MarketSnapshot.id)).where(MarketSnapshot.route_id == route_id)
+        )
+        last_ts = await self.session.scalar(
+            select(func.max(MarketSnapshot.timestamp)).where(MarketSnapshot.route_id == route_id)
+        )
+        return {
+            "observation_count": int(count_value or 0),
+            "last_observation_at": last_ts,
+        }
+
+    async def opportunity_stats_for_route(self, route_id: str, since_hours: int = 24) -> dict[str, object]:
+        since = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+        total = int(
+            await self.session.scalar(
+                select(func.count(Opportunity.id)).where(
+                    Opportunity.route_id == route_id,
+                    Opportunity.timestamp >= since,
+                )
+            )
+            or 0
+        )
+        quote_unavailable = int(
+            await self.session.scalar(
+                select(func.count(Opportunity.id)).where(
+                    Opportunity.route_id == route_id,
+                    Opportunity.timestamp >= since,
+                    Opportunity.blocked_reason == "quote_unavailable",
+                )
+            )
+            or 0
+        )
+        top_rows = await self.session.execute(
+            select(Opportunity.blocked_reason, func.count(Opportunity.id))
+            .where(
+                Opportunity.route_id == route_id,
+                Opportunity.timestamp >= since,
+                Opportunity.blocked_reason != "",
+            )
+            .group_by(Opportunity.blocked_reason)
+            .order_by(func.count(Opportunity.id).desc())
+            .limit(5)
+        )
+        return {
+            "total_opportunities": total,
+            "quote_unavailable_count": quote_unavailable,
+            "quote_unavailable_rate": (Decimal(quote_unavailable) / Decimal(total)) if total > 0 else Decimal("0"),
+            "blocked_top": [
+                {"blocked_reason": str(reason), "count": int(count)}
+                for reason, count in top_rows.all()
+            ],
+        }
+
+    async def backtest_stats_for_route(self, route_id: str) -> dict[str, object]:
+        run_count = int(
+            await self.session.scalar(select(func.count(BacktestRun.id)).where(BacktestRun.route_id == route_id))
+            or 0
+        )
+        latest_run = await self.session.scalar(
+            select(BacktestRun)
+            .where(BacktestRun.route_id == route_id)
+            .order_by(BacktestRun.created_at.desc())
+            .limit(1)
+        )
+        latest_result = None
+        if latest_run is not None:
+            latest_result = await self.session.scalar(
+                select(BacktestResult)
+                .where(BacktestResult.backtest_run_id == latest_run.id)
+                .order_by(BacktestResult.created_at.desc())
+                .limit(1)
+            )
+        replay_mode = "unknown"
+        if latest_result is not None:
+            payload = self._safe_json(latest_result.metadata_json)
+            replay_mode = str(payload.get("replay_mode", "unknown"))
+        return {
+            "backtest_run_count": run_count,
+            "last_backtest_status": latest_run.status if latest_run is not None else "none",
+            "last_backtest_pnl": latest_result.simulated_pnl if latest_result is not None else Decimal("0"),
+            "last_backtest_mode": replay_mode,
+        }
 
     async def blocked_reason_summary(self, since_minutes: int = 60) -> list[dict[str, object]]:
         since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
@@ -858,6 +1045,16 @@ class Repository:
             .limit(limit)
         )
         return list(rows)
+
+    @staticmethod
+    def _safe_json(raw: str) -> dict[str, object]:
+        try:
+            value = json.loads(raw)
+            if isinstance(value, dict):
+                return value
+        except Exception:
+            return {}
+        return {}
 
     async def write_config_audit(
         self,

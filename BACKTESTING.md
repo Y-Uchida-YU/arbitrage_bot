@@ -1,6 +1,6 @@
 # BACKTESTING
 
-Backtesting is event-driven replay over persisted observations/opportunities.
+Backtesting is event-driven replay over persisted observations.
 
 ## Purpose
 
@@ -10,10 +10,19 @@ Backtesting is event-driven replay over persisted observations/opportunities.
 
 ## Data Sources
 
-- `opportunities` (primary replay stream)
+- `opportunities` (derived replay stream)
 - `market_snapshots` (observation audit)
 - `route_health_snapshots` (health context)
 - `parameter_sets` (backtest parameterization)
+
+## Replay Modes
+
+- `opportunities`
+  - Re-evaluates persisted opportunity rows.
+  - Fast sanity/repro mode for threshold changes.
+- `market_snapshots`
+  - Reconstructs route events from raw-ish observation rows (`leg_b` snapshots + latest route health state).
+  - Better for commissioning truthfulness checks and readiness scoring.
 
 ## Conservative Fill Model
 
@@ -28,6 +37,9 @@ Included penalties/guards:
 - latency penalty
 - liquidity cap / pool share cap
 - quote unavailable / fee unknown / quote mismatch blocking
+- fallback-fee penalty
+- unverified fee penalty
+- unverified balance penalty
 
 ## Running Backtest (CLI)
 
@@ -38,7 +50,8 @@ python -m app.main backtest \
   --pair USDC/USDt0 \
   --start-ts 2026-03-29T00:00:00+00:00 \
   --end-ts 2026-03-30T00:00:00+00:00 \
-  --parameter-set-id <optional_parameter_set_id>
+  --parameter-set-id <optional_parameter_set_id> \
+  --replay-mode market_snapshots
 ```
 
 ## Running Backtest (API)
@@ -59,7 +72,8 @@ Request example:
   "start_ts": "2026-03-29T00:00:00+00:00",
   "end_ts": "2026-03-30T00:00:00+00:00",
   "parameter_set_id": null,
-  "notes": "commissioning replay"
+  "notes": "commissioning replay",
+  "replay_mode": "market_snapshots"
 }
 ```
 
@@ -80,10 +94,16 @@ Key outputs include:
 - max drawdown
 - worst losing sequence
 - missed opportunities
+- stale/unknown health event count
+- fee confidence distribution
+- balance confidence distribution
+- penalty totals
 
 ## Interpretation Guidelines
 
 - Prefer stability and explainability over peak simulated PnL.
 - High `quote_unavailable` or `health_unknown` rates indicate readiness gaps.
+- `fallback_only`/`config_only` fee dominance is a readiness blocker.
+- `internal_ok` only (without wallet/venue verification) is not sufficient for live readiness.
 - If blocked reasons are not explainable, do not advance commissioning stage.
 - Keep real submit disabled until checklist completion.

@@ -7,6 +7,13 @@ from decimal import Decimal
 
 from app.config.settings import RunMode, Settings
 from app.quote_engine.types import OpportunityDecision, RouteQuote
+from app.utils.confidence import (
+    balance_confidence_at_least,
+    fee_confidence_at_least,
+    normalize_balance_confidence,
+    normalize_fee_confidence,
+    normalize_quote_match_status,
+)
 
 
 @dataclass(slots=True)
@@ -25,10 +32,15 @@ class HealthSnapshot:
     signing_ok: bool = False
     signing_known: bool = False
     fee_known: bool = False
+    fee_known_status: str = "unknown"
+    fee_provenance: str = ""
     quote_match: bool = False
     quote_match_known: bool = False
+    quote_match_status: str = "unknown"
     balance_match: bool = False
     balance_match_known: bool = False
+    balance_match_status: str = "unknown"
+    balance_failure_reason: str = ""
     clock_skew_ok: bool = False
     contract_revert_rate: Decimal = Decimal("0")
 
@@ -300,21 +312,47 @@ class GlobalRiskManager:
         if not checks["fee_known"]:
             return OpportunityDecision(False, "fee_unknown", checks)
 
-        checks["quote_match_known"] = health.quote_match_known
+        fee_status = normalize_fee_confidence(health.fee_known_status)
+        checks["fee_status_known"] = fee_status != "unknown"
+        if not checks["fee_status_known"]:
+            return OpportunityDecision(False, "fee_unknown", checks)
+
+        required_fee_status = (
+            self.settings.live_min_fee_confidence_status
+            if mode == RunMode.LIVE
+            else "fallback_only"
+        )
+        checks["fee_status_verified"] = fee_confidence_at_least(fee_status, required_fee_status)
+        if not checks["fee_status_verified"]:
+            return OpportunityDecision(False, "fee_unverified", checks)
+
+        quote_match_status = normalize_quote_match_status(health.quote_match_status)
+        checks["quote_match_known"] = health.quote_match_known and quote_match_status != "unknown"
         if not checks["quote_match_known"]:
             return OpportunityDecision(False, "health_unknown", checks)
 
-        checks["quote_match"] = health.quote_match
+        checks["quote_match"] = health.quote_match and quote_match_status == "matched"
         if not checks["quote_match"]:
             return OpportunityDecision(False, "quote_mismatch", checks)
 
-        checks["balance_match_known"] = health.balance_match_known
+        balance_status = normalize_balance_confidence(health.balance_match_status)
+        checks["balance_match_known"] = health.balance_match_known and balance_status != "unknown"
         if not checks["balance_match_known"]:
-            return OpportunityDecision(False, "health_unknown", checks)
+            return OpportunityDecision(False, "balance_unverified", checks)
 
-        checks["balance_match"] = health.balance_match
+        checks["balance_match"] = health.balance_match and balance_status != "mismatch"
         if not checks["balance_match"]:
+            failure_reason = health.balance_failure_reason.strip().lower()
+            if failure_reason == "wallet_balance_mismatch":
+                return OpportunityDecision(False, "wallet_balance_mismatch", checks)
+            if failure_reason == "inventory_drift":
+                return OpportunityDecision(False, "inventory_drift", checks)
             return OpportunityDecision(False, "balance_mismatch", checks)
+
+        required_balance_status = self.settings.live_min_balance_confidence_status if mode == RunMode.LIVE else "internal_ok"
+        checks["balance_status_verified"] = balance_confidence_at_least(balance_status, required_balance_status)
+        if not checks["balance_status_verified"]:
+            return OpportunityDecision(False, "balance_unverified", checks)
 
         checks["clock_skew_ok"] = health.clock_skew_ok
         if not checks["clock_skew_ok"]:

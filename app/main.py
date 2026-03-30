@@ -108,6 +108,7 @@ async def run_backtest_cli(args: argparse.Namespace) -> None:
             end_ts=_parse_iso8601_utc(args.end_ts),
             parameter_set_id=args.parameter_set_id,
             notes=args.notes or "",
+            replay_mode=args.replay_mode or "opportunities",
         )
         print(json.dumps(result, default=str))
     await close_engine()
@@ -124,6 +125,12 @@ def run() -> None:
     backtest.add_argument("--end-ts", required=True, help="ISO8601 UTC datetime")
     backtest.add_argument("--parameter-set-id", required=False)
     backtest.add_argument("--notes", required=False)
+    backtest.add_argument(
+        "--replay-mode",
+        required=False,
+        default="opportunities",
+        choices=["opportunities", "market_snapshots"],
+    )
 
     args = parser.parse_args()
     if args.command == "backtest":

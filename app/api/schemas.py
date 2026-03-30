@@ -215,6 +215,7 @@ class BacktestRunRequest(ControlRequest):
     end_ts: datetime
     parameter_set_id: str | None = None
     notes: str = ""
+    replay_mode: str = "opportunities"
 
 
 class BacktestRunOut(BaseModel):
@@ -245,6 +246,7 @@ class BacktestResultOut(BaseModel):
     max_drawdown: Decimal
     worst_sequence: int
     missed_opportunities: int
+    replay_mode: str = "unknown"
     blocked_reason_json: str
     metadata_json: str
     created_at: datetime
@@ -261,3 +263,33 @@ class BacktestTradeOut(BaseModel):
     expected_pnl: Decimal
     simulated_pnl: Decimal
     metadata_json: str
+
+
+class RouteReadinessOut(BaseModel):
+    route_id: str
+    strategy: str
+    support_status: str
+    fee_known_status: str
+    balance_match_status: str
+    quote_match_status: str
+    cooldown_active: bool
+    fatal_paused: bool
+    observation_count: int
+    last_observation_at: datetime | None
+    quote_unavailable_rate: Decimal
+    recent_blocked_reasons: list[dict[str, object]]
+    backtest_run_count: int
+    last_backtest_status: str
+    last_backtest_pnl: Decimal
+    last_backtest_mode: str
+    readiness_grade: str
+    readiness_blockers: list[str]
+    human_action_items: list[str]
+
+
+class ReadinessSummaryOut(BaseModel):
+    red_count: int
+    yellow_count: int
+    green_count: int
+    total_routes: int
+    latest_backtest_mode: str
