@@ -13,7 +13,7 @@ from app.config.settings import get_settings
 from app.dashboard.router import router as dashboard_router
 from app.db.repository import Repository
 from app.db.session import close_engine, get_engine, get_sessionmaker
-from app.db.init_db import create_all
+from app.db.init_db import create_all, schema_ready
 from app.models import core as _models  # noqa: F401
 from app.utils.logging import setup_logging
 
@@ -28,7 +28,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = get_engine()
     session_factory = get_sessionmaker()
 
-    await create_all(engine)
+    if settings.auto_create_schema:
+        await create_all(engine)
+    else:
+        ready = await schema_ready(engine)
+        if not ready:
+            raise RuntimeError(
+                "Database schema is not ready. Run Alembic migrations or set AUTO_CREATE_SCHEMA=true for local/dev only."
+            )
     async with session_factory() as session:
         repo = Repository(session)
         await repo.seed_defaults()
