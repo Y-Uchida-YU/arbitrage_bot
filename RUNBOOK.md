@@ -7,11 +7,18 @@
 3. Start API/dashboard: `uvicorn app.main:app --host 0.0.0.0 --port 8000`.
 4. Verify: `GET /api/health` and dashboard load.
 
+If startup fails with schema error:
+
+- confirm Alembic migration is applied
+- or set `AUTO_CREATE_SCHEMA=true` only for local/dev sandbox
+
 ## Operational Checks
 
 - `GET /api/status` confirms mode and pause flags
 - `GET /api/overview` confirms PnL/trade/health summary
 - Dashboard opportunities table shows block reasons
+- `GET /api/cooldowns` confirms per-route cooldown/failure state
+- `GET /api/blocked-reason-summary` confirms guard trend
 
 ## Manual Controls
 
@@ -32,6 +39,12 @@ All control endpoints require `CONTROL_API_TOKEN`.
 4. Call `/api/control/switch-mode` with both control token and `live_confirmation_token`.
 5. Validate dry-run behavior, guard statuses, and alerting.
 6. Only after sign-off, enable real execution path (not enabled by default in this version).
+
+## Real-Data Commissioning Notes
+
+- `USE_MOCK_MARKET_DATA=false` enables real-data capable adapters.
+- If quoter/pool/token config is missing for a venue, it is treated as `quote_unavailable` and blocked.
+- This is expected fail-safe behavior, not a runtime crash.
 
 ## Incident Response
 

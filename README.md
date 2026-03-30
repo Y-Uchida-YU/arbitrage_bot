@@ -42,6 +42,13 @@ alembic upgrade head
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+## Schema Policy (Important)
+
+- Source of truth is Alembic migration.
+- Default: `AUTO_CREATE_SCHEMA=false` (conservative)
+- If schema is missing and `AUTO_CREATE_SCHEMA=false`, startup fails fast.
+- Local-only fallback: set `AUTO_CREATE_SCHEMA=true` when commissioning quick sandbox runs.
+
 ## Local Run (Docker)
 
 ```bash
@@ -59,6 +66,20 @@ LIVE_EXECUTION_ENABLED=false
 ```
 
 - Start service. Bot runner begins opportunity scanning in paper mode.
+
+## Mock / Real Data Switch
+
+- `USE_MOCK_MARKET_DATA=true`
+  - deterministic mock adapters for commissioning/UI/test
+- `USE_MOCK_MARKET_DATA=false`
+  - CEX adapters call real Bybit/MEXC APIs
+  - DEX adapters use real quoter path if configured
+  - unconfigured/unsupported DEX venue is handled as `quote_unavailable` (blocked), not crash
+
+Required real config examples:
+
+- `HYPEREVM_RAMSES_QUOTER`, `HYPEREVM_HYBRA_QUOTER`, pool/token/fee fields
+- `BASE_UNISWAP_QUOTER`, `BASE_PANCAKE_QUOTER`, pool/token/fee fields
 
 ## Live Mode Enable Conditions
 
@@ -88,6 +109,10 @@ Even after switching to live mode, initial implementation keeps real submission 
 - `GET /api/balances`
 - `GET /api/inventory`
 - `GET /api/metrics`
+- `GET /api/routes`
+- `GET /api/route-health`
+- `GET /api/blocked-reason-summary`
+- `GET /api/cooldowns`
 - `POST /api/control/pause`
 - `POST /api/control/resume`
 - `POST /api/control/stop-all`
@@ -102,12 +127,14 @@ Even after switching to live mode, initial implementation keeps real submission 
 
 ## Environment Variables
 
-See [.env.example](/C:/MyProjects/arbitrageBot/.env.example) for the full list.
+See [.env.example](.env.example) for the full list.
 
 High-impact variables:
 
 - `MODE`
 - `DATABASE_URL`
+- `AUTO_CREATE_SCHEMA`
+- `USE_MOCK_MARKET_DATA`
 - `CONTROL_API_TOKEN`
 - `LIVE_ENABLE_FLAG`
 - `LIVE_CONFIRMATION_TOKEN`
@@ -126,6 +153,7 @@ High-impact variables:
 - Fee model mismatch across venues/accounts
 - Unexpected stablecoin depeg behavior
 - Operational mistakes in mode switching
+- Misconfigured quoter/pool/token mapping can force `quote_unavailable` and halt tradability
 
 ## Kill Switches
 
@@ -143,6 +171,19 @@ High-impact variables:
 - Auto-compounding and portfolio optimization
 - AI-based threshold auto-tuning
 - Multi-hop complex routing optimization
+
+## Unsupported / Not Ready Venues (Default Config)
+
+With default `.env.example` real-market setup, the following are intentionally not tradable until quoter/pool config is provided:
+
+- HyperEVM: `ramses_v3`, `hybra_v3`, `hybra_v4_observer`
+- Base: `uniswap_v3_base`, `pancakeswap_v3_base`, `aerodrome_base`
+
+Behavior is fail-safe:
+
+- route quote becomes unavailable
+- opportunity is persisted with `blocked_reason=quote_unavailable`
+- no live submission is attempted
 
 ## Project Layout
 
@@ -163,7 +204,7 @@ High-impact variables:
 
 ## Future Extensions
 
-- Real on-chain quoter integration for each DEX adapter
+- Real live submit path wiring remains intentionally disabled (`LIVE_EXECUTION_ENABLED=false`)
 - Signed transaction submission path (currently dry-run by default)
 - Fine-grained auth/RBAC for control API
 - Strategy-specific dynamic notional control

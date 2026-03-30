@@ -6,10 +6,14 @@
 
 - modeled edge calculation
 - stale/slippage/depeg/gas guards
+- strict failure semantics and cooldown behavior
+- quote_unavailable handling
 - symbol normalization
 - config defaults and allowlist parsing
 - kill switch behavior
 - route adapter selection
+- health collector rolling metrics
+- blocked reason summary aggregation
 
 ## Integration
 
@@ -18,13 +22,18 @@
 - overview/opportunities/executions API
 - control API actions
 - live mode switch + dry-run flow
+- `USE_MOCK_MARKET_DATA=false` startup behavior
+- unsupported DEX path => blocked/quote_unavailable behavior
+- schema guard behavior (`AUTO_CREATE_SCHEMA=false`)
 
 ## Contract
 
 - `ArbExecutor` happy path
 - minProfit unmet revert
 - unauthorized caller revert
-- non-allowlisted router revert
+- route validation mismatch revert
+- selector not allowed revert
+- pool/fee mismatch revert
 - paused revert
 - emergency withdraw
 

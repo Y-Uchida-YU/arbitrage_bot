@@ -23,6 +23,7 @@
 - Consecutive failure limit
 - Consecutive loss limit
 - Cooldown after failure
+- Fatal failure categories (quote mismatch/revert/chain mismatch/router violation/stale critical data/quote unavailable)
 
 ## Live Threshold Defaults
 
@@ -35,6 +36,8 @@
 - `LIVE_MAX_TRADES_PER_ROUTE_PER_10M=3`
 - `LIVE_MAX_CONSECUTIVE_FAILURES_PER_ROUTE=1`
 - `LIVE_MAX_CONSECUTIVE_LOSSES_PER_ROUTE=2`
+- `ROUTE_FAILURE_COOLDOWN_SECONDS=300`
+- `ROUTE_FATAL_FAILURE_COOLDOWN_SECONDS=900`
 - `GLOBAL_DAILY_DD_STOP_PCT=0.005`
 - `GLOBAL_STALE_QUOTE_STOP_SECONDS=3`
 
@@ -48,3 +51,8 @@
 ## Fail-Safe Behavior
 
 If required data is stale/unknown or subsystems become unreliable, new entries are blocked and logged with explicit `blocked_reason`.
+
+Strict semantics:
+
+- when `LIVE_MAX_CONSECUTIVE_FAILURES_PER_ROUTE=1`, one failure blocks the next attempt
+- fatal category can pause route immediately pending manual investigation

@@ -58,9 +58,7 @@ def compiled() -> dict:
 
 def _artifact(compiled: dict, file_name: str, contract_name: str) -> tuple[list[dict], str]:
     item = compiled["contracts"][file_name][contract_name]
-    abi = item["abi"]
-    bytecode = item["evm"]["bytecode"]["object"]
-    return abi, bytecode
+    return item["abi"], item["evm"]["bytecode"]["object"]
 
 
 def _deploy(w3: Web3, abi: list[dict], bytecode: str, args: list) -> str:
@@ -103,31 +101,29 @@ def _build_default_setup(w3: Web3, compiled: dict) -> dict:
 
     route_id = Web3.keccak(text="route1")
     corr_id = Web3.keccak(text="corr1")
+    pool_a = Web3.keccak(text="pool-a")
+    pool_b = Web3.keccak(text="pool-b")
 
     data1 = router1.encodeABI(fn_name="swap", args=[token_a_addr, token_b_addr, init_amount, leg1_out])
     data2 = router2.encodeABI(fn_name="swap", args=[token_b_addr, token_a_addr, leg1_out, final_out])
 
+    selector1 = bytes.fromhex(data1[2:10])
+    selector2 = bytes.fromhex(data2[2:10])
+
+    executor.functions.registerRoute(
+        route_id,
+        token_a_addr,
+        token_b_addr,
+        [router1_addr, router2_addr],
+        [pool_a, pool_b],
+        [5, 5],
+        [selector1, selector2],
+        True,
+    ).transact({"from": owner})
+
     steps = [
-        (
-            router1_addr,
-            token_a_addr,
-            token_b_addr,
-            Web3.keccak(text="pool-a"),
-            5,
-            init_amount,
-            leg1_out,
-            bytes.fromhex(data1[2:]),
-        ),
-        (
-            router2_addr,
-            token_b_addr,
-            token_a_addr,
-            Web3.keccak(text="pool-b"),
-            5,
-            leg1_out,
-            final_out,
-            bytes.fromhex(data2[2:]),
-        ),
+        (router1_addr, token_a_addr, token_b_addr, pool_a, 5, init_amount, leg1_out, bytes.fromhex(data1[2:])),
+        (router2_addr, token_b_addr, token_a_addr, pool_b, 5, leg1_out, final_out, bytes.fromhex(data2[2:])),
     ]
 
     return {
@@ -142,7 +138,11 @@ def _build_default_setup(w3: Web3, compiled: dict) -> dict:
         "corr_id": corr_id,
         "init_amount": init_amount,
         "final_out": final_out,
+        "pool_a": pool_a,
+        "pool_b": pool_b,
         "steps": steps,
+        "data1": data1,
+        "data2": data2,
     }
 
 
@@ -210,24 +210,121 @@ def test_unauthorized_revert(w3: Web3, compiled: dict) -> None:
         ).transact({"from": s["other"]})
 
 
-def test_non_allowlisted_router_revert(w3: Web3, compiled: dict) -> None:
+def test_route_validation_mismatch_revert(w3: Web3, compiled: dict) -> None:
     s = _build_default_setup(w3, compiled)
     owner = s["owner"]
     token_a = s["token_a"]
     executor = s["executor"]
     deadline = w3.eth.get_block("latest")["timestamp"] + 60
 
-    unknown_router = w3.eth.accounts[9]
     bad_steps = list(s["steps"])
     bad_steps[1] = (
-        unknown_router,
+        bad_steps[1][0],
         bad_steps[1][1],
-        bad_steps[1][2],
+        bad_steps[1][1],  # tokenOut mismatch
         bad_steps[1][3],
         bad_steps[1][4],
         bad_steps[1][5],
         bad_steps[1][6],
         bad_steps[1][7],
+    )
+
+    with pytest.raises(TransactionFailed):
+        executor.functions.executeArb(
+            s["route_id"],
+            s["corr_id"],
+            token_a.address,
+            s["init_amount"],
+            s["init_amount"],
+            0,
+            deadline,
+            bad_steps,
+        ).transact({"from": owner})
+
+
+def test_selector_not_allowed_revert(w3: Web3, compiled: dict) -> None:
+    s = _build_default_setup(w3, compiled)
+    owner = s["owner"]
+    token_a = s["token_a"]
+    executor = s["executor"]
+    deadline = w3.eth.get_block("latest")["timestamp"] + 60
+
+    alt_data = s["router1"].encodeABI(fn_name="setShouldRevert", args=[False])
+    bad_steps = list(s["steps"])
+    bad_steps[0] = (
+        bad_steps[0][0],
+        bad_steps[0][1],
+        bad_steps[0][2],
+        bad_steps[0][3],
+        bad_steps[0][4],
+        bad_steps[0][5],
+        bad_steps[0][6],
+        bytes.fromhex(alt_data[2:]),
+    )
+
+    with pytest.raises(TransactionFailed):
+        executor.functions.executeArb(
+            s["route_id"],
+            s["corr_id"],
+            token_a.address,
+            s["init_amount"],
+            s["init_amount"],
+            0,
+            deadline,
+            bad_steps,
+        ).transact({"from": owner})
+
+
+def test_pool_fee_mismatch_revert(w3: Web3, compiled: dict) -> None:
+    s = _build_default_setup(w3, compiled)
+    owner = s["owner"]
+    token_a = s["token_a"]
+    executor = s["executor"]
+    deadline = w3.eth.get_block("latest")["timestamp"] + 60
+
+    bad_steps = list(s["steps"])
+    bad_steps[0] = (
+        bad_steps[0][0],
+        bad_steps[0][1],
+        bad_steps[0][2],
+        Web3.keccak(text="wrong-pool"),
+        30,
+        bad_steps[0][5],
+        bad_steps[0][6],
+        bad_steps[0][7],
+    )
+
+    with pytest.raises(TransactionFailed):
+        executor.functions.executeArb(
+            s["route_id"],
+            s["corr_id"],
+            token_a.address,
+            s["init_amount"],
+            s["init_amount"],
+            0,
+            deadline,
+            bad_steps,
+        ).transact({"from": owner})
+
+
+def test_step_data_too_large_revert(w3: Web3, compiled: dict) -> None:
+    s = _build_default_setup(w3, compiled)
+    owner = s["owner"]
+    token_a = s["token_a"]
+    executor = s["executor"]
+    deadline = w3.eth.get_block("latest")["timestamp"] + 60
+
+    oversized = bytes.fromhex(s["data1"][2:]) + (b"\x00" * 600)
+    bad_steps = list(s["steps"])
+    bad_steps[0] = (
+        bad_steps[0][0],
+        bad_steps[0][1],
+        bad_steps[0][2],
+        bad_steps[0][3],
+        bad_steps[0][4],
+        bad_steps[0][5],
+        bad_steps[0][6],
+        oversized,
     )
 
     with pytest.raises(TransactionFailed):

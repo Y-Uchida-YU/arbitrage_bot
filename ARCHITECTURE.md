@@ -5,11 +5,12 @@
 1. FastAPI application
 2. Async SQLAlchemy repository layer
 3. Background `BotRunner`
-4. Strategy quote engines
-5. Risk manager (hard fail-safe)
-6. Execution engines (paper + live dry-run)
-7. Discord alert service
-8. Server-rendered dashboard (Jinja2 + HTMX + Chart.js)
+4. `HealthCollector` (real telemetry + rolling windows)
+5. Strategy quote engines
+6. Risk manager (hard fail-safe)
+7. Execution engines (paper + live dry-run)
+8. Discord alert service
+9. Server-rendered dashboard (Jinja2 + HTMX + Chart.js)
 
 ## Data Flow
 
@@ -32,6 +33,7 @@
 - Allowlists for routers/tokens/pools
 - Depeg, stale, gas, liquidity, error-rate checks
 - Consecutive failure/loss and trade frequency controls
+- Fatal failure categories trigger immediate route cooldown/pause semantics
 
 ## Persistence
 
@@ -59,3 +61,4 @@ All timestamps are stored in UTC. Monetary/ratio fields use decimal numeric colu
 - Intended live strategy: HyperEVM same-chain DEX-DEX atomic path.
 - This implementation intentionally keeps submission disabled by default (`LIVE_EXECUTION_ENABLED=false`) and performs dry-run integration for safe commissioning.
 - Solidity `ArbExecutor` contract enforces owner-only, allowlists, deadlines, min-out/min-profit checks, pause, and emergency withdraw.
+- Contract route registration validates router/token/pool/fee/selector sequence for fixed 2-leg route safety.
