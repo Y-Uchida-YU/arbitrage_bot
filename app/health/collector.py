@@ -26,6 +26,7 @@ class HealthCollector:
         self._rpc_latency: deque[TimedValue] = deque()
         self._rpc_results: deque[TimedBool] = deque()
         self._db_latency: deque[TimedValue] = deque()
+        self._db_results: deque[TimedBool] = deque()
         self._quote_latency: deque[TimedValue] = deque()
         self._quote_age: deque[TimedValue] = deque()
         self._gas_series: deque[TimedValue] = deque()
@@ -35,6 +36,11 @@ class HealthCollector:
         self._venue_unavailable_events: dict[str, deque[datetime]] = defaultdict(deque)
         self._route_liquidity: dict[str, deque[TimedValue]] = defaultdict(deque)
         self._heartbeat_ts: datetime = datetime.now(timezone.utc)
+        self._last_quality_update: datetime = datetime.now(timezone.utc)
+        self._signing_state: str = "unknown"
+        self._fee_state: str = "unknown"
+        self._quote_match_state: str = "unknown"
+        self._balance_state: str = "unknown"
 
     def record_rpc_probe(self, latency_ms: Decimal, ok: bool) -> None:
         now = datetime.now(timezone.utc)
@@ -42,9 +48,10 @@ class HealthCollector:
         self._rpc_results.append(TimedBool(now, ok))
         self._trim_all(now)
 
-    def record_db_latency(self, latency_ms: Decimal) -> None:
+    def record_db_latency(self, latency_ms: Decimal, ok: bool = True) -> None:
         now = datetime.now(timezone.utc)
         self._db_latency.append(TimedValue(now, latency_ms))
+        self._db_results.append(TimedBool(now, ok))
         self._trim_all(now)
 
     def record_quote_probe(
@@ -87,6 +94,20 @@ class HealthCollector:
 
     def set_heartbeat(self, ts: datetime) -> None:
         self._heartbeat_ts = ts
+
+    def set_quality_status(
+        self,
+        *,
+        signing_ok: bool | None,
+        fee_known: bool | None,
+        quote_match: bool | None,
+        balance_match: bool | None,
+    ) -> None:
+        self._signing_state = self._state_from_optional(signing_ok)
+        self._fee_state = self._state_from_optional(fee_known)
+        self._quote_match_state = self._state_from_optional(quote_match)
+        self._balance_state = self._state_from_optional(balance_match)
+        self._last_quality_update = datetime.now(timezone.utc)
 
     def build_snapshot(self, route_id: str) -> CommissioningHealthSnapshot:
         now = datetime.now(timezone.utc)
@@ -167,19 +188,35 @@ class HealthCollector:
 
     def to_risk_snapshot(self, route_id: str) -> HealthSnapshot:
         snap = self.build_snapshot(route_id)
+        now = datetime.now(timezone.utc)
+        health_age_seconds = Decimal(str((now - self._last_quality_update).total_seconds()))
+        rpc_error_rate = self._error_rate(self._rpc_results)
+        db_error_rate = self._error_rate(self._db_results)
+
+        rpc_known = bool(self._rpc_results)
+        rpc_reachable = bool(self._rpc_results and self._rpc_results[-1].ok and rpc_error_rate < Decimal("0.5"))
+        db_known = bool(self._db_results)
+        db_reachable = bool(self._db_results and self._db_results[-1].ok and db_error_rate < Decimal("0.5"))
+
         return HealthSnapshot(
             rpc_error_rate_5m=snap.rpc_error_rate_5m,
             gas_now=snap.gas_now,
             gas_p90=snap.gas_p90,
             liquidity_change_pct=snap.liquidity_change_pct,
             quote_stale_seconds=snap.quote_age_seconds,
+            health_age_seconds=health_age_seconds,
             alert_failures=sum(1 for x in self._alert_results if not x.ok),
-            db_reachable=bool(self._db_latency),
-            rpc_reachable=bool(self._rpc_results and self._rpc_results[-1].ok),
-            signing_ok=True,
-            fee_known=True,
-            quote_match=True,
-            balance_match=True,
+            db_reachable=db_reachable,
+            db_known=db_known,
+            rpc_reachable=rpc_reachable,
+            rpc_known=rpc_known,
+            signing_ok=self._signing_state == "good",
+            signing_known=self._signing_state != "unknown",
+            fee_known=self._fee_state == "good",
+            quote_match=self._quote_match_state == "good",
+            quote_match_known=self._quote_match_state != "unknown",
+            balance_match=self._balance_state == "good",
+            balance_match_known=self._balance_state != "unknown",
             clock_skew_ok=snap.heartbeat_lag_seconds < Decimal("10"),
             contract_revert_rate=snap.contract_revert_rate,
         )
@@ -188,7 +225,16 @@ class HealthCollector:
         cutoff_5m = now - timedelta(minutes=5)
         cutoff_60m = now - timedelta(hours=1)
 
-        for dq in (self._rpc_latency, self._rpc_results, self._db_latency, self._quote_latency, self._quote_age, self._alert_results, self._execution_results):
+        for dq in (
+            self._rpc_latency,
+            self._rpc_results,
+            self._db_latency,
+            self._db_results,
+            self._quote_latency,
+            self._quote_age,
+            self._alert_results,
+            self._execution_results,
+        ):
             while dq and dq[0].ts < cutoff_5m:
                 dq.popleft()
 
@@ -223,3 +269,9 @@ class HealthCollector:
         idx = int((Decimal(len(values) - 1) * q).to_integral_value(rounding=ROUND_HALF_UP))
         idx = max(0, min(idx, len(values) - 1))
         return values[idx]
+
+    @staticmethod
+    def _state_from_optional(value: bool | None) -> str:
+        if value is None:
+            return "unknown"
+        return "good" if value else "bad"

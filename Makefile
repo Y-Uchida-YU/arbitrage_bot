@@ -1,6 +1,6 @@
 PYTHON ?= python
 
-.PHONY: install run lint format typecheck test migrate
+.PHONY: install run lint format typecheck test migrate backtest
 
 install:
 	$(PYTHON) -m pip install --upgrade pip
@@ -23,3 +23,6 @@ test:
 
 migrate:
 	alembic upgrade head
+
+backtest:
+	$(PYTHON) -m app.main backtest --strategy $(STRATEGY) --route-id $(ROUTE_ID) --pair $(PAIR) --start-ts $(START_TS) --end-ts $(END_TS) $(if $(PARAMETER_SET_ID),--parameter-set-id $(PARAMETER_SET_ID),)

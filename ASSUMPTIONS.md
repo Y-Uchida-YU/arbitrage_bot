@@ -3,12 +3,13 @@
 ## Assumptions
 
 - Default runtime uses mock market data for deterministic local validation (`USE_MOCK_MARKET_DATA=true`).
+- Real data mode exists (`USE_MOCK_MARKET_DATA=false`), but unsupported quoter/ABI routes are intentionally blocked as `quote_unavailable`.
 - HyperEVM/Base RPC URLs and token/router addresses in `.env.example` are placeholders and must be replaced before production.
 - Live transaction submission remains disabled by default to preserve safety-first rollout.
 
 ## TODO Before Production
 
-- Replace mock DEX quotes with verified on-chain quoter integrations per venue.
+- Complete missing verified on-chain quoter integrations for unsupported venues/routes.
 - Wire real signer + transaction manager with nonce/replacement policies.
 - Add strict auth (JWT/session/RBAC) for dashboard and control APIs.
 - Add robust per-venue market status probes and quote drift detectors.

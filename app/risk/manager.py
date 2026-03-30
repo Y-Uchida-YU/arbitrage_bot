@@ -16,14 +16,20 @@ class HealthSnapshot:
     gas_p90: Decimal = Decimal("1")
     liquidity_change_pct: Decimal = Decimal("0")
     quote_stale_seconds: Decimal = Decimal("0")
+    health_age_seconds: Decimal = Decimal("999")
     alert_failures: int = 0
-    db_reachable: bool = True
-    rpc_reachable: bool = True
-    signing_ok: bool = True
-    fee_known: bool = True
-    quote_match: bool = True
-    balance_match: bool = True
-    clock_skew_ok: bool = True
+    db_reachable: bool = False
+    db_known: bool = False
+    rpc_reachable: bool = False
+    rpc_known: bool = False
+    signing_ok: bool = False
+    signing_known: bool = False
+    fee_known: bool = False
+    quote_match: bool = False
+    quote_match_known: bool = False
+    balance_match: bool = False
+    balance_match_known: bool = False
+    clock_skew_ok: bool = False
     contract_revert_rate: Decimal = Decimal("0")
 
 
@@ -66,6 +72,14 @@ class GlobalRiskManager:
         self.route_stats: dict[str, RouteStats] = defaultdict(RouteStats)
         self.daily_realized_pnl = Decimal("0")
         self.day_anchor = datetime.now(timezone.utc).date()
+
+    @staticmethod
+    def _as_utc(dt: datetime | None) -> datetime | None:
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
 
     def reset_daily_if_needed(self) -> None:
         today = datetime.now(timezone.utc).date()
@@ -172,6 +186,7 @@ class GlobalRiskManager:
 
     def get_route_state(self, route_id: str) -> dict[str, str | int | bool]:
         stats = self.route_stats[route_id]
+        cooldown_until = self.cooldown_until.get(route_id)
         return {
             "route_id": route_id,
             "consecutive_failures": stats.consecutive_failures,
@@ -179,9 +194,40 @@ class GlobalRiskManager:
             "last_failure_category": stats.last_failure_category,
             "last_failure_reason": stats.last_failure_reason,
             "last_failure_fatal": stats.last_failure_fatal,
+            "last_failure_at": stats.last_failure_at.isoformat() if stats.last_failure_at else "",
+            "cooldown_until": cooldown_until.isoformat() if cooldown_until else "",
             "cooldown_remaining_seconds": self.cooldown_remaining_seconds(route_id),
             "route_paused": route_id in self.route_paused,
         }
+
+    def hydrate_route_state(
+        self,
+        route_id: str,
+        paused: bool,
+        cooldown_until: datetime | None,
+        last_failure_category: str,
+        last_failure_reason: str,
+        last_failure_fatal: bool,
+        last_failure_at: datetime | None,
+        consecutive_failures: int,
+        consecutive_losses: int,
+    ) -> None:
+        stats = self.route_stats[route_id]
+        stats.consecutive_failures = max(0, int(consecutive_failures))
+        stats.consecutive_losses = max(0, int(consecutive_losses))
+        stats.last_failure_category = last_failure_category
+        stats.last_failure_reason = last_failure_reason
+        stats.last_failure_fatal = last_failure_fatal
+        stats.last_failure_at = self._as_utc(last_failure_at)
+        if paused:
+            self.route_paused.add(route_id)
+        else:
+            self.route_paused.discard(route_id)
+        cooldown_until_utc = self._as_utc(cooldown_until)
+        if cooldown_until_utc and cooldown_until_utc > datetime.now(timezone.utc):
+            self.cooldown_until[route_id] = cooldown_until_utc
+        else:
+            self.cooldown_until.pop(route_id, None)
 
     def evaluate(
         self,
@@ -199,42 +245,6 @@ class GlobalRiskManager:
         checks["global_pause"] = not self.global_kill_switch
         if not checks["global_pause"]:
             return OpportunityDecision(False, "global_pause", checks)
-
-        checks["db_reachable"] = health.db_reachable
-        if not checks["db_reachable"]:
-            return OpportunityDecision(False, "db_unreachable", checks)
-
-        checks["rpc_reachable"] = health.rpc_reachable
-        if not checks["rpc_reachable"]:
-            return OpportunityDecision(False, "rpc_unreachable", checks)
-
-        checks["signing_ok"] = health.signing_ok
-        if not checks["signing_ok"]:
-            return OpportunityDecision(False, "signing_error", checks)
-
-        checks["fee_known"] = health.fee_known
-        if not checks["fee_known"]:
-            return OpportunityDecision(False, "fee_unknown", checks)
-
-        checks["quote_match"] = health.quote_match
-        if not checks["quote_match"]:
-            return OpportunityDecision(False, "quote_mismatch", checks)
-
-        checks["balance_match"] = health.balance_match
-        if not checks["balance_match"]:
-            return OpportunityDecision(False, "balance_mismatch", checks)
-
-        checks["clock_skew_ok"] = health.clock_skew_ok
-        if not checks["clock_skew_ok"]:
-            return OpportunityDecision(False, "clock_skew", checks)
-
-        checks["contract_revert_rate"] = health.contract_revert_rate <= Decimal("0.2")
-        if not checks["contract_revert_rate"]:
-            return OpportunityDecision(False, "contract_revert_rate_high", checks)
-
-        checks["alert_health"] = health.alert_failures < self.settings.alert_failure_stop_threshold
-        if not checks["alert_health"]:
-            return OpportunityDecision(False, "alert_subsystem_failure", checks)
 
         checks["strategy_pause"] = quote.strategy not in self.strategy_paused
         if not checks["strategy_pause"]:
@@ -257,6 +267,66 @@ class GlobalRiskManager:
         checks["quote_unavailable"] = quote.metadata.get("quote_unavailable", "false") != "true"
         if not checks["quote_unavailable"]:
             return OpportunityDecision(False, "quote_unavailable", checks)
+
+        checks["health_fresh"] = health.health_age_seconds <= Decimal(self.settings.health_snapshot_stale_seconds)
+        if not checks["health_fresh"]:
+            return OpportunityDecision(False, "stale_health", checks)
+
+        checks["db_known"] = health.db_known
+        if not checks["db_known"]:
+            return OpportunityDecision(False, "health_unknown", checks)
+
+        checks["db_reachable"] = health.db_reachable
+        if not checks["db_reachable"]:
+            return OpportunityDecision(False, "db_unreachable", checks)
+
+        checks["rpc_known"] = health.rpc_known
+        if not checks["rpc_known"]:
+            return OpportunityDecision(False, "health_unknown", checks)
+
+        checks["rpc_reachable"] = health.rpc_reachable
+        if not checks["rpc_reachable"]:
+            return OpportunityDecision(False, "rpc_unreachable", checks)
+
+        checks["signing_known"] = health.signing_known
+        if not checks["signing_known"]:
+            return OpportunityDecision(False, "health_unknown", checks)
+
+        checks["signing_ok"] = health.signing_ok
+        if not checks["signing_ok"]:
+            return OpportunityDecision(False, "signing_error", checks)
+
+        checks["fee_known"] = health.fee_known
+        if not checks["fee_known"]:
+            return OpportunityDecision(False, "fee_unknown", checks)
+
+        checks["quote_match_known"] = health.quote_match_known
+        if not checks["quote_match_known"]:
+            return OpportunityDecision(False, "health_unknown", checks)
+
+        checks["quote_match"] = health.quote_match
+        if not checks["quote_match"]:
+            return OpportunityDecision(False, "quote_mismatch", checks)
+
+        checks["balance_match_known"] = health.balance_match_known
+        if not checks["balance_match_known"]:
+            return OpportunityDecision(False, "health_unknown", checks)
+
+        checks["balance_match"] = health.balance_match
+        if not checks["balance_match"]:
+            return OpportunityDecision(False, "balance_mismatch", checks)
+
+        checks["clock_skew_ok"] = health.clock_skew_ok
+        if not checks["clock_skew_ok"]:
+            return OpportunityDecision(False, "clock_skew", checks)
+
+        checks["contract_revert_rate"] = health.contract_revert_rate <= Decimal("0.2")
+        if not checks["contract_revert_rate"]:
+            return OpportunityDecision(False, "contract_revert_rate_high", checks)
+
+        checks["alert_health"] = health.alert_failures < self.settings.alert_failure_stop_threshold
+        if not checks["alert_health"]:
+            return OpportunityDecision(False, "alert_subsystem_failure", checks)
 
         checks["quote_fresh"] = quote.quote_age_seconds <= Decimal(quote_freshness_limit)
         if not checks["quote_fresh"]:

@@ -8,6 +8,13 @@ Safety-priority crypto arbitrage framework designed for **risk control before ex
 - Shadow v1: Base `VIRTUAL/USDC` DEX observation vs Bybit/MEXC spot (paper only)
 - Out of scope: CEX-CEX live, leverage, borrowing, flash-loan, bridge, cross-chain
 
+## Commissioning Focus (Current)
+
+- Real-data observation with conservative blocking semantics
+- Observation persistence for post-analysis
+- Replay/backtest on saved data for threshold validation
+- Live-readiness decision support while keeping real submit disabled
+
 ## Safety Principles
 
 - Default mode is `paper`
@@ -113,6 +120,12 @@ Even after switching to live mode, initial implementation keeps real submission 
 - `GET /api/route-health`
 - `GET /api/blocked-reason-summary`
 - `GET /api/cooldowns`
+- `GET /api/market-snapshots`
+- `GET /api/route-health-snapshots`
+- `POST /api/backtest/run`
+- `GET /api/backtest/runs`
+- `GET /api/backtest/results`
+- `GET /api/backtest/results/{run_id}`
 - `POST /api/control/pause`
 - `POST /api/control/resume`
 - `POST /api/control/stop-all`
@@ -124,6 +137,17 @@ Even after switching to live mode, initial implementation keeps real submission 
 - `POST /api/control/disable-venue`
 - `POST /api/control/enable-venue`
 - `POST /api/control/clear-cooldown`
+
+## Backtest CLI
+
+```bash
+python -m app.main backtest \
+  --strategy hyperevm_dex_dex \
+  --route-id <route_id> \
+  --pair USDC/USDt0 \
+  --start-ts 2026-03-29T00:00:00+00:00 \
+  --end-ts 2026-03-30T00:00:00+00:00
+```
 
 ## Environment Variables
 
@@ -145,6 +169,9 @@ High-impact variables:
 - `LIVE_MIN_NET_EDGE_BPS`
 - `SHADOW_MIN_NET_EDGE_BPS`
 - `GLOBAL_STALE_QUOTE_STOP_SECONDS`
+- `HEALTH_SNAPSHOT_STALE_SECONDS`
+- `HYPEREVM_RAMSES_QUOTER_FEE_TIER` / `HYPEREVM_RAMSES_POOL_FEE_TIER` / `HYPEREVM_RAMSES_ECONOMIC_FEE_BPS`
+- `HYPEREVM_HYBRA_QUOTER_FEE_TIER` / `HYPEREVM_HYBRA_POOL_FEE_TIER` / `HYPEREVM_HYBRA_ECONOMIC_FEE_BPS`
 
 ## Major Risks
 
@@ -198,6 +225,7 @@ Behavior is fail-safe:
 - `app/dashboard` server-rendered UI
 - `app/alerts` Discord/webhook alert service
 - `app/jobs` bot runner loops
+- `app/backtest` event-driven replay/backtest engine
 - `app/api` REST API
 - `contracts/` Solidity contract sources
 - `tests/` unit/integration/contract tests
@@ -209,3 +237,13 @@ Behavior is fail-safe:
 - Fine-grained auth/RBAC for control API
 - Strategy-specific dynamic notional control
 - Expanded telemetry and SLO-based guard automation
+
+## Additional Docs
+
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [RISK_GUARDS.md](RISK_GUARDS.md)
+- [RUNBOOK.md](RUNBOOK.md)
+- [TESTING.md](TESTING.md)
+- [COMMISSIONING_PLAN.md](COMMISSIONING_PLAN.md)
+- [BACKTESTING.md](BACKTESTING.md)
+- [LIVE_READINESS_CHECKLIST.md](LIVE_READINESS_CHECKLIST.md)

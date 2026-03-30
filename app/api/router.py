@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -10,6 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
     BalanceOut,
+    BacktestResultOut,
+    BacktestRunOut,
+    BacktestRunRequest,
+    BacktestTradeOut,
     CooldownOut,
     ControlRequest,
     CooldownControlRequest,
@@ -18,10 +23,12 @@ from app.api.schemas import (
     ExecutionOut,
     HealthResponse,
     InventoryOut,
+    MarketSnapshotOut,
     MetricOut,
     ModeSwitchRequest,
     OpportunityOut,
     RouteOut,
+    RouteHealthSnapshotOut,
     StrategyControlRequest,
     TradeOut,
     VenueControlRequest,
@@ -48,6 +55,35 @@ def _check_control_token(state: AppState, token: str) -> None:
     expected = state.settings.control_api_token.get_secret_value()
     if token != expected:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid control token")
+
+
+async def _persist_route_state(repo: Repository, state: AppState, route_id: str) -> None:
+    current = state.risk_manager.get_route_state(route_id)
+    cooldown_until = None
+    last_failure_at = None
+    raw = str(current.get("cooldown_until", ""))
+    if raw:
+        try:
+            cooldown_until = datetime.fromisoformat(raw)
+        except ValueError:
+            cooldown_until = None
+    last_failure_raw = str(current.get("last_failure_at", ""))
+    if last_failure_raw:
+        try:
+            last_failure_at = datetime.fromisoformat(last_failure_raw)
+        except ValueError:
+            last_failure_at = None
+    await repo.upsert_route_runtime_state(
+        route_id=route_id,
+        paused=bool(current.get("route_paused", False)),
+        cooldown_until=cooldown_until,
+        last_failure_category=str(current.get("last_failure_category", "")),
+        last_failure_reason=str(current.get("last_failure_reason", "")),
+        last_failure_fatal=bool(current.get("last_failure_fatal", False)),
+        last_failure_at=last_failure_at,
+        consecutive_failures=int(current.get("consecutive_failures", 0)),
+        consecutive_losses=int(current.get("consecutive_losses", 0)),
+    )
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -105,6 +141,7 @@ async def opportunities(
     pair: str | None = Query(default=None),
     venue: str | None = Query(default=None),
     route_id: str | None = Query(default=None),
+    source_type: str | None = Query(default=None),
     blocked_reason: str | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=1000),
     session: AsyncSession = Depends(get_async_session),
@@ -115,10 +152,44 @@ async def opportunities(
         pair=pair,
         venue=venue,
         route_id=route_id,
+        source_type=source_type,
         blocked_reason=blocked_reason,
         limit=limit,
     )
-    return [OpportunityOut.model_validate(x, from_attributes=True) for x in rows]
+    output: list[OpportunityOut] = []
+    for row in rows:
+        payload: dict[str, object] = {}
+        try:
+            parsed = json.loads(row.payload_json)
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = {}
+        output.append(
+            OpportunityOut(
+                id=row.id,
+                timestamp=row.timestamp,
+                strategy=row.strategy,
+                pair=row.pair,
+                direction=row.direction,
+                venues=row.venues,
+                raw_edge_bps=row.raw_edge_bps,
+                modeled_edge_bps=row.modeled_edge_bps,
+                expected_pnl_abs=row.expected_pnl_abs,
+                expected_slippage_bps=row.expected_slippage_bps,
+                gas_estimate_usdc=row.gas_estimate_usdc,
+                quote_age_seconds=row.quote_age_seconds,
+                persisted_seconds=row.persisted_seconds,
+                pool_health_ok=row.pool_health_ok,
+                status=row.status,
+                blocked_reason=row.blocked_reason,
+                payload_json=row.payload_json,
+                quote_source=str(payload.get("quote_source", "")),
+                risk_checks=str(payload.get("risk_checks", "")),
+                quote_unavailable_reason=str(payload.get("quote_unavailable_reason", "")),
+            )
+        )
+    return output
 
 
 @router.get("/trades", response_model=list[TradeOut])
@@ -168,6 +239,30 @@ async def metrics(
     return [MetricOut.model_validate(x, from_attributes=True) for x in rows]
 
 
+@router.get("/market-snapshots", response_model=list[MarketSnapshotOut])
+async def market_snapshots(
+    strategy: str | None = Query(default=None),
+    route_id: str | None = Query(default=None),
+    venue: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=2000),
+    session: AsyncSession = Depends(get_async_session),
+) -> list[MarketSnapshotOut]:
+    repo = Repository(session)
+    rows = await repo.list_market_snapshots(strategy=strategy, route_id=route_id, venue=venue, limit=limit)
+    return [MarketSnapshotOut.model_validate(x, from_attributes=True) for x in rows]
+
+
+@router.get("/route-health-snapshots", response_model=list[RouteHealthSnapshotOut])
+async def route_health_snapshots(
+    route_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=2000),
+    session: AsyncSession = Depends(get_async_session),
+) -> list[RouteHealthSnapshotOut]:
+    repo = Repository(session)
+    rows = await repo.list_route_health_snapshots(route_id=route_id, limit=limit)
+    return [RouteHealthSnapshotOut.model_validate(x, from_attributes=True) for x in rows]
+
+
 @router.get("/routes", response_model=list[RouteOut])
 async def routes(session: AsyncSession = Depends(get_async_session)) -> list[RouteOut]:
     repo = Repository(session)
@@ -185,6 +280,22 @@ async def route_health(
     routes = await repo.list_routes()
     output: list[dict[str, object]] = []
     for route in routes:
+        runtime_row = await repo.get_route_runtime_state(route.id)
+        persisted_state = (
+            {
+                "paused": runtime_row.paused,
+                "cooldown_until": runtime_row.cooldown_until.isoformat() if runtime_row.cooldown_until else "",
+                "last_failure_category": runtime_row.last_failure_category,
+                "last_failure_reason": runtime_row.last_failure_reason,
+                "last_failure_fatal": runtime_row.last_failure_fatal,
+                "last_failure_at": runtime_row.last_failure_at.isoformat() if runtime_row.last_failure_at else "",
+                "consecutive_failures": runtime_row.consecutive_failures,
+                "consecutive_losses": runtime_row.consecutive_losses,
+            }
+            if runtime_row is not None
+            else None
+        )
+        latest_health = await repo.latest_route_health_snapshot(route.id)
         output.append(
             {
                 "route_id": route.id,
@@ -195,6 +306,19 @@ async def route_health(
                 "kill_switch": route.kill_switch,
                 "risk_state": state.risk_manager.get_route_state(route.id),
                 "health_snapshot": asdict(state.health_collector.build_snapshot(route.id)),
+                "persisted_runtime_state": persisted_state,
+                "persisted_health": (
+                    {
+                        "fee_known_status": latest_health.fee_known_status,
+                        "quote_match_status": latest_health.quote_match_status,
+                        "balance_match_status": latest_health.balance_match_status,
+                        "support_status": latest_health.support_status,
+                        "cooldown_active": latest_health.cooldown_active,
+                        "paused": latest_health.paused,
+                    }
+                    if latest_health
+                    else None
+                ),
             }
         )
     return output
@@ -285,6 +409,7 @@ async def disable_route(
     updated = await repo.set_route_enabled(payload.route_id, False)
     await repo.write_kill_switch_event("route", payload.route_id, "trigger", "manual_disable_route")
     state.risk_manager.pause_route(payload.route_id)
+    await _persist_route_state(repo, state, payload.route_id)
     return {"ok": updated, "route_id": payload.route_id, "enabled": False}
 
 
@@ -300,6 +425,7 @@ async def enable_route(
     updated = await repo.set_route_enabled(payload.route_id, True)
     await repo.write_kill_switch_event("route", payload.route_id, "release", "manual_enable_route")
     state.risk_manager.resume_route(payload.route_id)
+    await _persist_route_state(repo, state, payload.route_id)
     return {"ok": updated, "route_id": payload.route_id, "enabled": True}
 
 
@@ -447,7 +573,71 @@ async def clear_cooldown(
         after_json="{}",
         notes="manual cooldown clear",
     )
+    if payload.route_id:
+        await _persist_route_state(repo, state, payload.route_id)
+    else:
+        routes = await repo.list_routes()
+        for route in routes:
+            await _persist_route_state(repo, state, route.id)
     return {"ok": True, "route_id": payload.route_id or "all"}
+
+
+@router.post("/backtest/run")
+async def run_backtest(
+    payload: BacktestRunRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+) -> dict[str, object]:
+    state = get_state(request)
+    _check_control_token(state, payload.token)
+    repo = Repository(session)
+    result = await state.backtest_engine.run(
+        repo,
+        strategy=payload.strategy,
+        route_id=payload.route_id,
+        pair=payload.pair,
+        start_ts=payload.start_ts,
+        end_ts=payload.end_ts,
+        parameter_set_id=payload.parameter_set_id,
+        notes=payload.notes,
+    )
+    return result
+
+
+@router.get("/backtest/runs", response_model=list[BacktestRunOut])
+async def backtest_runs(
+    limit: int = Query(default=100, ge=1, le=1000),
+    session: AsyncSession = Depends(get_async_session),
+) -> list[BacktestRunOut]:
+    repo = Repository(session)
+    rows = await repo.list_backtest_runs(limit=limit)
+    return [BacktestRunOut.model_validate(x, from_attributes=True) for x in rows]
+
+
+@router.get("/backtest/results", response_model=list[BacktestResultOut])
+async def backtest_results(
+    limit: int = Query(default=100, ge=1, le=1000),
+    session: AsyncSession = Depends(get_async_session),
+) -> list[BacktestResultOut]:
+    repo = Repository(session)
+    rows = await repo.list_backtest_results(limit=limit)
+    return [BacktestResultOut.model_validate(x, from_attributes=True) for x in rows]
+
+
+@router.get("/backtest/results/{run_id}")
+async def backtest_result_detail(
+    run_id: str,
+    session: AsyncSession = Depends(get_async_session),
+) -> dict[str, object]:
+    repo = Repository(session)
+    result = await repo.get_backtest_result(run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="backtest result not found")
+    trades = await repo.list_backtest_trades(run_id, limit=5000)
+    return {
+        "result": BacktestResultOut.model_validate(result, from_attributes=True),
+        "trades": [BacktestTradeOut.model_validate(x, from_attributes=True) for x in trades],
+    }
 
 
 @router.get("/prometheus", response_class=PlainTextResponse)

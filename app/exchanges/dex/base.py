@@ -10,11 +10,25 @@ class DEXAdapter(ABC):
     support_reason: str = ""
 
     @abstractmethod
-    async def quote_exact_input(self, token_in: str, token_out: str, amount_in: Decimal) -> Decimal:
+    async def quote_exact_input(
+        self,
+        token_in: str,
+        token_out: str,
+        amount_in: Decimal,
+        fee_tier: int | None = None,
+        pool_id: str | None = None,
+    ) -> Decimal:
         raise NotImplementedError
 
     @abstractmethod
-    async def quote_exact_output(self, token_in: str, token_out: str, amount_out: Decimal) -> Decimal:
+    async def quote_exact_output(
+        self,
+        token_in: str,
+        token_out: str,
+        amount_out: Decimal,
+        fee_tier: int | None = None,
+        pool_id: str | None = None,
+    ) -> Decimal:
         raise NotImplementedError
 
     @abstractmethod

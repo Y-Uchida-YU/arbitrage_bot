@@ -56,3 +56,5 @@ Strict semantics:
 
 - when `LIVE_MAX_CONSECUTIVE_FAILURES_PER_ROUTE=1`, one failure blocks the next attempt
 - fatal category can pause route immediately pending manual investigation
+- route cooldown/pause/failure counters are persisted in DB and restored on restart
+- unknown health states are blocked (`health_unknown`) rather than assumed healthy

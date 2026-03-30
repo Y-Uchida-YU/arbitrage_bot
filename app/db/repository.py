@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -9,14 +10,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import RunMode
 from app.models.core import (
     Balance,
+    BacktestResult,
+    BacktestRun,
+    BacktestTrade,
     ConfigAuditLog,
     Execution,
     FeeProfile,
     HealthMetric,
     InventorySnapshot,
     KillSwitchEvent,
+    MarketSnapshot,
     Opportunity,
+    ParameterSet,
     Route,
+    RouteHealthSnapshot,
+    RouteRuntimeState,
     RuntimeControl,
     Strategy,
     TradeAttempt,
@@ -56,6 +64,12 @@ class Repository:
                         router_b="0x0000000000000000000000000000000000000010",
                         fee_tier_a_bps=5,
                         fee_tier_b_bps=5,
+                        quoter_fee_tier_a=5,
+                        quoter_fee_tier_b=5,
+                        pool_fee_tier_a=5,
+                        pool_fee_tier_b=5,
+                        economic_fee_bps_a=5,
+                        economic_fee_bps_b=5,
                         is_live_allowed=True,
                     ),
                     Route(
@@ -71,6 +85,12 @@ class Repository:
                         router_b="0x0000000000000000000000000000000000000010",
                         fee_tier_a_bps=5,
                         fee_tier_b_bps=5,
+                        quoter_fee_tier_a=5,
+                        quoter_fee_tier_b=5,
+                        pool_fee_tier_a=5,
+                        pool_fee_tier_b=5,
+                        economic_fee_bps_a=5,
+                        economic_fee_bps_b=5,
                         is_live_allowed=True,
                     ),
                     Route(
@@ -86,6 +106,12 @@ class Repository:
                         router_b="uniswap_v3_base",
                         fee_tier_a_bps=10,
                         fee_tier_b_bps=100,
+                        quoter_fee_tier_a=10,
+                        quoter_fee_tier_b=100,
+                        pool_fee_tier_a=10,
+                        pool_fee_tier_b=100,
+                        economic_fee_bps_a=10,
+                        economic_fee_bps_b=100,
                         is_live_allowed=False,
                     ),
                     Route(
@@ -101,6 +127,12 @@ class Repository:
                         router_b="pancake_v3_base",
                         fee_tier_a_bps=5,
                         fee_tier_b_bps=100,
+                        quoter_fee_tier_a=5,
+                        quoter_fee_tier_b=100,
+                        pool_fee_tier_a=5,
+                        pool_fee_tier_b=100,
+                        economic_fee_bps_a=5,
+                        economic_fee_bps_b=100,
                         is_live_allowed=False,
                     ),
                 ]
@@ -125,7 +157,52 @@ class Repository:
                 ]
             )
 
+        await self.session.flush()
+        await self.ensure_route_runtime_states()
+        await self.ensure_default_parameter_sets()
         await self.session.commit()
+
+    async def ensure_route_runtime_states(self) -> None:
+        routes = list(await self.session.scalars(select(Route)))
+        for route in routes:
+            exists = await self.session.scalar(
+                select(func.count(RouteRuntimeState.id)).where(RouteRuntimeState.route_id == route.id)
+            )
+            if not exists:
+                self.session.add(
+                    RouteRuntimeState(
+                        route_id=route.id,
+                        paused=False,
+                        cooldown_until=None,
+                        last_failure_at=None,
+                        consecutive_failures=0,
+                        consecutive_losses=0,
+                    )
+                )
+
+    async def ensure_default_parameter_sets(self) -> None:
+        has_param = await self.session.scalar(select(func.count(ParameterSet.id)))
+        if has_param:
+            return
+        self.session.add(
+            ParameterSet(
+                name="default_conservative",
+                strategy="hyperevm_dex_dex",
+                description="Conservative baseline for commissioning replay/backtest",
+                is_default=True,
+                params_json=json.dumps(
+                    {
+                        "min_modeled_edge_bps": 30,
+                        "max_slippage_bps": 2,
+                        "max_quote_age_seconds": 3,
+                        "gas_penalty_bps": 2,
+                        "quote_drift_buffer_bps": 3,
+                        "latency_penalty_bps": 2,
+                        "liquidity_cap_ratio": "0.0002",
+                    }
+                ),
+            )
+        )
 
     async def get_runtime_control(self) -> RuntimeControl:
         row = await self.session.scalar(select(RuntimeControl).order_by(RuntimeControl.updated_at.desc()))
@@ -202,6 +279,46 @@ class Repository:
         rows = await self.session.scalars(select(Route).order_by(Route.strategy.asc(), Route.name.asc()))
         return list(rows)
 
+    async def list_route_runtime_states(self) -> list[RouteRuntimeState]:
+        rows = await self.session.scalars(
+            select(RouteRuntimeState).order_by(RouteRuntimeState.updated_at.desc())
+        )
+        return list(rows)
+
+    async def get_route_runtime_state(self, route_id: str) -> RouteRuntimeState | None:
+        return await self.session.scalar(
+            select(RouteRuntimeState).where(RouteRuntimeState.route_id == route_id)
+        )
+
+    async def upsert_route_runtime_state(
+        self,
+        route_id: str,
+        paused: bool,
+        cooldown_until: datetime | None,
+        last_failure_category: str,
+        last_failure_reason: str,
+        last_failure_fatal: bool,
+        last_failure_at: datetime | None,
+        consecutive_failures: int,
+        consecutive_losses: int,
+    ) -> RouteRuntimeState:
+        row = await self.get_route_runtime_state(route_id)
+        if row is None:
+            row = RouteRuntimeState(route_id=route_id)
+            self.session.add(row)
+        row.paused = paused
+        row.cooldown_until = cooldown_until
+        row.last_failure_category = last_failure_category
+        row.last_failure_reason = last_failure_reason
+        row.last_failure_fatal = last_failure_fatal
+        row.last_failure_at = last_failure_at
+        row.consecutive_failures = consecutive_failures
+        row.consecutive_losses = consecutive_losses
+        row.updated_at = datetime.now(timezone.utc)
+        await self.session.commit()
+        await self.session.refresh(row)
+        return row
+
     async def get_wallet_usdc_balance(self) -> Decimal:
         bal = await self.session.scalar(
             select(Balance).where(Balance.venue == "hyperevm_wallet", Balance.token == "USDC")
@@ -237,7 +354,7 @@ class Repository:
             blocked_reason=blocked_reason,
             pool_health_ok=quote.metadata.get("pool_health", "false") == "true",
             persisted_seconds=quote.persisted_seconds,
-            payload_json=str(quote.metadata),
+            payload_json=json.dumps(quote.metadata, sort_keys=True),
         )
         self.session.add(opp)
         await self.session.commit()
@@ -355,6 +472,7 @@ class Repository:
         pair: str | None = None,
         venue: str | None = None,
         route_id: str | None = None,
+        source_type: str | None = None,
         blocked_reason: str | None = None,
         limit: int = 200,
     ) -> list[Opportunity]:
@@ -367,9 +485,34 @@ class Repository:
             query = query.where(Opportunity.venues.contains(venue))
         if route_id:
             query = query.where(Opportunity.route_id == route_id)
+        if source_type:
+            query = query.where(Opportunity.payload_json.contains(f'"quote_source": "{source_type}"'))
         if blocked_reason:
             query = query.where(Opportunity.blocked_reason == blocked_reason)
         rows = await self.session.scalars(query.order_by(Opportunity.created_at.desc()).limit(limit))
+        return list(rows)
+
+    async def list_opportunities_for_backtest(
+        self,
+        strategy: str,
+        route_id: str,
+        pair: str,
+        start_ts: datetime,
+        end_ts: datetime,
+        limit: int = 200000,
+    ) -> list[Opportunity]:
+        rows = await self.session.scalars(
+            select(Opportunity)
+            .where(
+                Opportunity.strategy == strategy,
+                Opportunity.route_id == route_id,
+                Opportunity.pair == pair,
+                Opportunity.timestamp >= start_ts,
+                Opportunity.timestamp <= end_ts,
+            )
+            .order_by(Opportunity.timestamp.asc())
+            .limit(limit)
+        )
         return list(rows)
 
     async def list_trades(self, limit: int = 200) -> list[TradeAttempt]:
@@ -392,6 +535,34 @@ class Repository:
 
     async def list_health_metrics(self, limit: int = 200) -> list[HealthMetric]:
         rows = await self.session.scalars(select(HealthMetric).order_by(HealthMetric.timestamp.desc()).limit(limit))
+        return list(rows)
+
+    async def list_market_snapshots(
+        self,
+        strategy: str | None = None,
+        route_id: str | None = None,
+        venue: str | None = None,
+        limit: int = 200,
+    ) -> list[MarketSnapshot]:
+        query = select(MarketSnapshot)
+        if strategy:
+            query = query.where(MarketSnapshot.strategy == strategy)
+        if route_id:
+            query = query.where(MarketSnapshot.route_id == route_id)
+        if venue:
+            query = query.where(MarketSnapshot.venue == venue)
+        rows = await self.session.scalars(query.order_by(MarketSnapshot.timestamp.desc()).limit(limit))
+        return list(rows)
+
+    async def list_route_health_snapshots(
+        self,
+        route_id: str | None = None,
+        limit: int = 200,
+    ) -> list[RouteHealthSnapshot]:
+        query = select(RouteHealthSnapshot)
+        if route_id:
+            query = query.where(RouteHealthSnapshot.route_id == route_id)
+        rows = await self.session.scalars(query.order_by(RouteHealthSnapshot.timestamp.desc()).limit(limit))
         return list(rows)
 
     async def blocked_reason_summary(self, since_minutes: int = 60) -> list[dict[str, object]]:
@@ -442,6 +613,252 @@ class Repository:
         await self.session.refresh(metric)
         return metric
 
+    async def insert_market_snapshot(
+        self,
+        strategy: str,
+        route_id: str,
+        pair: str,
+        venue: str,
+        context: str,
+        bid: Decimal,
+        ask: Decimal,
+        amount_in: Decimal,
+        quoted_amount_out: Decimal,
+        liquidity_usd: Decimal,
+        gas_gwei: Decimal,
+        quote_age_seconds: Decimal,
+        source_type: str,
+        metadata_json: str,
+    ) -> MarketSnapshot:
+        row = MarketSnapshot(
+            run_id=new_run_id(),
+            strategy=strategy,
+            route_id=route_id,
+            pair=pair,
+            venue=venue,
+            context=context,
+            bid=bid,
+            ask=ask,
+            amount_in=amount_in,
+            quoted_amount_out=quoted_amount_out,
+            liquidity_usd=liquidity_usd,
+            gas_gwei=gas_gwei,
+            quote_age_seconds=quote_age_seconds,
+            source_type=source_type,
+            metadata_json=metadata_json,
+        )
+        self.session.add(row)
+        await self.session.commit()
+        await self.session.refresh(row)
+        return row
+
+    async def insert_route_health_snapshot(
+        self,
+        strategy: str,
+        route_id: str,
+        pair: str,
+        rpc_latency_ms: Decimal,
+        rpc_error_rate_5m: Decimal,
+        db_latency_ms: Decimal,
+        quote_latency_ms: Decimal,
+        market_data_staleness_seconds: Decimal,
+        contract_revert_rate: Decimal,
+        alert_send_success_rate: Decimal,
+        fee_known_status: str,
+        quote_match_status: str,
+        balance_match_status: str,
+        support_status: str,
+        cooldown_active: bool,
+        paused: bool,
+        metadata_json: str = "{}",
+    ) -> RouteHealthSnapshot:
+        row = RouteHealthSnapshot(
+            run_id=new_run_id(),
+            strategy=strategy,
+            route_id=route_id,
+            pair=pair,
+            rpc_latency_ms=rpc_latency_ms,
+            rpc_error_rate_5m=rpc_error_rate_5m,
+            db_latency_ms=db_latency_ms,
+            quote_latency_ms=quote_latency_ms,
+            market_data_staleness_seconds=market_data_staleness_seconds,
+            contract_revert_rate=contract_revert_rate,
+            alert_send_success_rate=alert_send_success_rate,
+            fee_known_status=fee_known_status,
+            quote_match_status=quote_match_status,
+            balance_match_status=balance_match_status,
+            support_status=support_status,
+            cooldown_active=cooldown_active,
+            paused=paused,
+            metadata_json=metadata_json,
+        )
+        self.session.add(row)
+        await self.session.commit()
+        await self.session.refresh(row)
+        return row
+
+    async def latest_route_health_snapshot(self, route_id: str) -> RouteHealthSnapshot | None:
+        return await self.session.scalar(
+            select(RouteHealthSnapshot)
+            .where(RouteHealthSnapshot.route_id == route_id)
+            .order_by(RouteHealthSnapshot.timestamp.desc())
+            .limit(1)
+        )
+
+    async def list_latest_route_health_snapshots(self) -> list[RouteHealthSnapshot]:
+        rows = list(
+            await self.session.scalars(
+                select(RouteHealthSnapshot).order_by(RouteHealthSnapshot.timestamp.desc()).limit(5000)
+            )
+        )
+        latest_by_route: dict[str, RouteHealthSnapshot] = {}
+        for row in rows:
+            if row.route_id not in latest_by_route:
+                latest_by_route[row.route_id] = row
+        return list(latest_by_route.values())
+
+    async def market_snapshot_count(self, since_minutes: int = 60) -> int:
+        since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
+        value = await self.session.scalar(
+            select(func.count(MarketSnapshot.id)).where(MarketSnapshot.timestamp >= since)
+        )
+        return int(value or 0)
+
+    async def list_parameter_sets(self, strategy: str | None = None) -> list[ParameterSet]:
+        query = select(ParameterSet)
+        if strategy:
+            query = query.where(ParameterSet.strategy == strategy)
+        rows = await self.session.scalars(query.order_by(ParameterSet.is_default.desc(), ParameterSet.created_at.desc()))
+        return list(rows)
+
+    async def get_parameter_set(self, parameter_set_id: str) -> ParameterSet | None:
+        return await self.session.scalar(select(ParameterSet).where(ParameterSet.id == parameter_set_id))
+
+    async def create_backtest_run(
+        self,
+        strategy: str,
+        route_id: str,
+        pair: str,
+        start_ts: datetime,
+        end_ts: datetime,
+        parameter_set_id: str | None,
+        notes: str = "",
+    ) -> BacktestRun:
+        row = BacktestRun(
+            strategy=strategy,
+            route_id=route_id,
+            pair=pair,
+            parameter_set_id=parameter_set_id,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            status="running",
+            notes=notes,
+        )
+        self.session.add(row)
+        await self.session.commit()
+        await self.session.refresh(row)
+        return row
+
+    async def finish_backtest_run(self, run_id: str, status: str) -> None:
+        row = await self.session.scalar(select(BacktestRun).where(BacktestRun.id == run_id))
+        if row is None:
+            return
+        row.status = status
+        row.finished_at = datetime.now(timezone.utc)
+        await self.session.commit()
+
+    async def insert_backtest_result(
+        self,
+        backtest_run_id: str,
+        signals: int,
+        eligible_count: int,
+        blocked_count: int,
+        simulated_pnl: Decimal,
+        hit_rate: Decimal,
+        avg_modeled_edge_bps: Decimal,
+        avg_realized_like_pnl: Decimal,
+        max_drawdown: Decimal,
+        worst_sequence: int,
+        missed_opportunities: int,
+        blocked_reason_json: str,
+        metadata_json: str = "{}",
+    ) -> BacktestResult:
+        row = BacktestResult(
+            backtest_run_id=backtest_run_id,
+            signals=signals,
+            eligible_count=eligible_count,
+            blocked_count=blocked_count,
+            simulated_pnl=simulated_pnl,
+            hit_rate=hit_rate,
+            avg_modeled_edge_bps=avg_modeled_edge_bps,
+            avg_realized_like_pnl=avg_realized_like_pnl,
+            max_drawdown=max_drawdown,
+            worst_sequence=worst_sequence,
+            missed_opportunities=missed_opportunities,
+            blocked_reason_json=blocked_reason_json,
+            metadata_json=metadata_json,
+        )
+        self.session.add(row)
+        await self.session.commit()
+        await self.session.refresh(row)
+        return row
+
+    async def insert_backtest_trade(
+        self,
+        backtest_run_id: str,
+        route_id: str,
+        timestamp: datetime,
+        status: str,
+        blocked_reason: str,
+        modeled_edge_bps: Decimal,
+        expected_pnl: Decimal,
+        simulated_pnl: Decimal,
+        metadata_json: str = "{}",
+    ) -> BacktestTrade:
+        row = BacktestTrade(
+            backtest_run_id=backtest_run_id,
+            route_id=route_id,
+            timestamp=timestamp,
+            status=status,
+            blocked_reason=blocked_reason,
+            modeled_edge_bps=modeled_edge_bps,
+            expected_pnl=expected_pnl,
+            simulated_pnl=simulated_pnl,
+            metadata_json=metadata_json,
+        )
+        self.session.add(row)
+        await self.session.commit()
+        await self.session.refresh(row)
+        return row
+
+    async def list_backtest_runs(self, limit: int = 100) -> list[BacktestRun]:
+        rows = await self.session.scalars(
+            select(BacktestRun).order_by(BacktestRun.created_at.desc()).limit(limit)
+        )
+        return list(rows)
+
+    async def list_backtest_results(self, limit: int = 100) -> list[BacktestResult]:
+        rows = await self.session.scalars(
+            select(BacktestResult).order_by(BacktestResult.created_at.desc()).limit(limit)
+        )
+        return list(rows)
+
+    async def get_backtest_result(self, run_id: str) -> BacktestResult | None:
+        return await self.session.scalar(
+            select(BacktestResult).join(BacktestRun, BacktestRun.id == BacktestResult.backtest_run_id).where(
+                BacktestRun.id == run_id
+            )
+        )
+
+    async def list_backtest_trades(self, run_id: str, limit: int = 5000) -> list[BacktestTrade]:
+        rows = await self.session.scalars(
+            select(BacktestTrade)
+            .where(BacktestTrade.backtest_run_id == run_id)
+            .order_by(BacktestTrade.timestamp.asc())
+            .limit(limit)
+        )
+        return list(rows)
+
     async def write_config_audit(
         self,
         actor: str,
@@ -484,6 +901,17 @@ class Repository:
         balances = await self.list_balances()
         quote_unavailable = await self.quote_unavailable_count(since_minutes=60)
         unhealthy_venues = await self.unhealthy_venues_count(since_minutes=60)
+        observations_count = await self.market_snapshot_count(since_minutes=60 * 24)
+        backtest_runs_count = int(await self.session.scalar(select(func.count(BacktestRun.id))) or 0)
+        runtime_states = await self.list_route_runtime_states()
+        persistent_cooldown_routes = sum(
+            1 for row in runtime_states if row.cooldown_until and row.cooldown_until > datetime.now(timezone.utc)
+        )
+        fatal_paused_routes = sum(1 for row in runtime_states if row.paused and row.last_failure_fatal)
+
+        latest_backtest = await self.session.scalar(
+            select(BacktestResult).order_by(BacktestResult.created_at.desc()).limit(1)
+        )
 
         success_rate = Decimal("0")
         failure_rate = Decimal("0")
@@ -521,5 +949,17 @@ class Repository:
             "latest_opportunities_count": int(latest_opps or 0),
             "quote_unavailable_count": quote_unavailable,
             "unhealthy_venues_count": unhealthy_venues,
+            "observation_records_count": observations_count,
+            "backtest_runs_count": backtest_runs_count,
+            "persistent_cooldown_routes_count": persistent_cooldown_routes,
+            "fatal_paused_routes_count": fatal_paused_routes,
+            "latest_backtest_summary": {
+                "simulated_pnl": str(latest_backtest.simulated_pnl),
+                "eligible_count": latest_backtest.eligible_count,
+                "blocked_count": latest_backtest.blocked_count,
+                "hit_rate": str(latest_backtest.hit_rate),
+            }
+            if latest_backtest
+            else None,
             "active_kill_switches": ["global_pause"] if ctrl.global_pause else [],
         }

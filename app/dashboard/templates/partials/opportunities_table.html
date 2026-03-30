@@ -15,8 +15,10 @@
       <th>Quote Age</th>
       <th>Persisted(s)</th>
       <th>Pool Health</th>
+      <th>Source</th>
       <th>Status</th>
       <th>Blocked Reason</th>
+      <th>Quote Unavailable Reason</th>
       <th>Checks</th>
     </tr>
   </thead>
@@ -36,9 +38,11 @@
       <td class="mono">{{ row.quote_age_seconds }}</td>
       <td class="mono">{{ row.persisted_seconds }}</td>
       <td>{{ 'ok' if row.pool_health_ok else 'bad' }}</td>
+      <td>{{ row.quote_source }}</td>
       <td>{{ row.status }}</td>
       <td class="warn">{{ row.blocked_reason }}</td>
-      <td class="mono">{{ row.payload_json }}</td>
+      <td class="mono">{{ row.quote_unavailable_reason }}</td>
+      <td class="mono">{{ row.risk_checks if row.risk_checks else row.payload_json }}</td>
     </tr>
   {% endfor %}
   </tbody>
