@@ -1,0 +1,41 @@
+<h3>Executions</h3>
+<table>
+  <thead>
+    <tr>
+      <th>Time</th>
+      <th>Strategy</th>
+      <th>Mode</th>
+      <th>Route</th>
+      <th>Input</th>
+      <th>Output</th>
+      <th>Expected PnL</th>
+      <th>Realized PnL</th>
+      <th>Tx Hash</th>
+      <th>Status</th>
+      <th>Revert Reason</th>
+      <th>Gas Used</th>
+      <th>Latency</th>
+      <th>Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in executions %}
+    <tr>
+      <td class="mono">{{ row.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+      <td>{{ row.strategy }}</td>
+      <td>{{ row.mode }}</td>
+      <td class="mono">{{ row.route_id }}</td>
+      <td class="mono">{{ row.input_amount }}</td>
+      <td class="mono">{{ row.output_amount }}</td>
+      <td class="mono">{{ row.expected_pnl }}</td>
+      <td class="mono {{ 'bad' if row.realized_pnl < 0 else 'good' }}">{{ row.realized_pnl }}</td>
+      <td class="mono">{{ row.tx_hash }}</td>
+      <td>{{ row.tx_status }}</td>
+      <td>{{ row.revert_reason }}</td>
+      <td class="mono">{{ row.gas_used }}</td>
+      <td class="mono">{{ row.latency_ms }}</td>
+      <td>{{ row.notes }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>

@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% block content %}
+  <section class="hero">
+    <h1>Safety-First Arbitrage Control Room</h1>
+    <p>Risk-first monitoring. Live execution is gated and disabled by default.</p>
+  </section>
+
+  <section class="grid">
+    <article class="card kpis">
+      <div class="kpi"><div class="label">Mode</div><div class="value">{{ overview.current_mode }}</div></div>
+      <div class="kpi"><div class="label">Global Status</div><div class="value"><span class="status-pill {{ 'status-stopped' if overview.global_status != 'healthy' else 'status-healthy' }}">{{ overview.global_status }}</span></div></div>
+      <div class="kpi"><div class="label">Today PnL</div><div class="value mono {{ 'bad' if overview.today_pnl < 0 else 'good' }}">{{ overview.today_pnl }}</div></div>
+      <div class="kpi"><div class="label">Cumulative PnL</div><div class="value mono {{ 'bad' if overview.cumulative_pnl < 0 else 'good' }}">{{ overview.cumulative_pnl }}</div></div>
+      <div class="kpi"><div class="label">Trades</div><div class="value mono">{{ overview.trade_count }}</div></div>
+      <div class="kpi"><div class="label">Latest Opportunities (5m)</div><div class="value mono">{{ overview.latest_opportunities_count }}</div></div>
+    </article>
+
+    <article class="card wide">
+      <div class="toolbar">
+        <a class="btn" href="/export/opportunities.csv">CSV Export</a>
+        <a class="btn" href="/export/opportunities.json">JSON Export</a>
+        <a class="btn" href="/export/logs">Log Download</a>
+      </div>
+    </article>
+
+    <article class="card wide">
+      <h3>Filters</h3>
+      <form
+        id="opp-filter"
+        class="toolbar"
+        hx-get="/dashboard/opportunities"
+        hx-target="#opportunities-pane"
+        hx-swap="innerHTML"
+      >
+        <input name="strategy" placeholder="strategy" />
+        <input name="pair" placeholder="pair" />
+        <input name="venue" placeholder="venue" />
+        <input name="blocked_reason" placeholder="blocked reason" />
+        <button class="btn" type="submit">Apply</button>
+      </form>
+    </article>
+
+    <article class="card half">
+      <h3>Balances</h3>
+      <table>
+        <thead>
+          <tr><th>Venue</th><th>Token</th><th>Available</th><th>Reserved</th><th>Total</th><th>USD</th></tr>
+        </thead>
+        <tbody>
+        {% for b in balances %}
+          <tr>
+            <td>{{ b.venue }}</td>
+            <td>{{ b.token }}</td>
+            <td class="mono">{{ b.available }}</td>
+            <td class="mono">{{ b.reserved }}</td>
+            <td class="mono">{{ b.total }}</td>
+            <td class="mono">{{ b.usd_value }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card half">
+      <h3>Telemetry Snapshot</h3>
+      <table>
+        <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+        <tbody>
+          {% for k,v in metric_snapshot.items() %}
+            <tr><td>{{ k }}</td><td class="mono">{{ v }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card wide">
+      <h3>Cumulative PnL Trend (Execution Series)</h3>
+      <canvas id="pnlChart" height="90"></canvas>
+    </article>
+
+    <article class="card third">
+      <h3>Eligible vs Blocked</h3>
+      <canvas id="eligibilityChart" height="160"></canvas>
+    </article>
+
+    <article class="card third">
+      <h3>Modeled Edge Distribution</h3>
+      <canvas id="edgeChart" height="160"></canvas>
+    </article>
+
+    <article class="card third">
+      <h3>Quote Freshness Trend</h3>
+      <canvas id="freshnessChart" height="160"></canvas>
+    </article>
+
+    <article class="card half">
+      <h3>Latency Trend</h3>
+      <canvas id="latencyChart" height="110"></canvas>
+    </article>
+
+    <article class="card half">
+      <h3>Gas Trend</h3>
+      <canvas id="gasChart" height="110"></canvas>
+    </article>
+
+    <article id="opportunities-pane" class="card wide" hx-get="/dashboard/opportunities" hx-include="#opp-filter" hx-trigger="load, every 5s" hx-swap="innerHTML">
+      Loading opportunities...
+    </article>
+
+    <article class="card wide" hx-get="/dashboard/executions" hx-trigger="load, every 5s" hx-swap="innerHTML">
+      Loading executions...
+    </article>
+  </section>
+
+  <script>
+    const points = {{ chart_points | tojson }};
+    const labels = points.map((p) => p.t);
+    let csum = 0;
+    const data = points.map((p) => {
+      csum += p.v;
+      return csum;
+    });
+
+    const ctx = document.getElementById("pnlChart").getContext("2d");
+    new Chart(ctx, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [{
+          label: "Cumulative PnL",
+          data,
+          borderColor: "#0f8f96",
+          pointRadius: 0,
+          borderWidth: 2,
+          fill: false,
+          tension: 0.2
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: true } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 8 } },
+          y: { beginAtZero: false }
+        }
+      }
+    });
+
+    const oppPoints = {{ opp_points | tojson }};
+    const edgeValues = oppPoints.map((p) => p.edge);
+    const freshnessValues = oppPoints.map((p) => p.quote_age);
+    const oppLabels = oppPoints.map((p) => p.t);
+    const eligibleCount = {{ eligible_count }};
+    const blockedCount = {{ blocked_count }};
+
+    new Chart(document.getElementById("eligibilityChart"), {
+      type: "doughnut",
+      data: {
+        labels: ["eligible", "blocked"],
+        datasets: [{ data: [eligibleCount, blockedCount], backgroundColor: ["#1f7a42", "#b00020"] }]
+      },
+      options: { plugins: { legend: { position: "bottom" } } }
+    });
+
+    const bins = [0, 0, 0, 0, 0];
+    edgeValues.forEach((v) => {
+      if (v < 0) bins[0] += 1;
+      else if (v < 30) bins[1] += 1;
+      else if (v < 80) bins[2] += 1;
+      else if (v < 150) bins[3] += 1;
+      else bins[4] += 1;
+    });
+    new Chart(document.getElementById("edgeChart"), {
+      type: "bar",
+      data: {
+        labels: ["<0", "0-30", "30-80", "80-150", "150+"],
+        datasets: [{ data: bins, backgroundColor: "#0f8f96" }]
+      },
+      options: { plugins: { legend: { display: false } } }
+    });
+
+    new Chart(document.getElementById("freshnessChart"), {
+      type: "line",
+      data: {
+        labels: oppLabels,
+        datasets: [{ label: "quote age sec", data: freshnessValues, borderColor: "#9b6a00", pointRadius: 0 }]
+      },
+      options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { maxTicksLimit: 6 } } } }
+    });
+
+    const latencyPoints = {{ latency_points | tojson }};
+    new Chart(document.getElementById("latencyChart"), {
+      type: "line",
+      data: {
+        labels: latencyPoints.map((p) => p.t),
+        datasets: [{ label: "quote latency ms", data: latencyPoints.map((p) => p.v), borderColor: "#183d3d", pointRadius: 0 }]
+      },
+      options: { scales: { x: { ticks: { maxTicksLimit: 6 } } } }
+    });
+
+    const gasPoints = {{ gas_points | tojson }};
+    new Chart(document.getElementById("gasChart"), {
+      type: "line",
+      data: {
+        labels: gasPoints.map((p) => p.t),
+        datasets: [{ label: "gas regime", data: gasPoints.map((p) => p.v), borderColor: "#2d5f5f", pointRadius: 0 }]
+      },
+      options: { scales: { x: { ticks: { maxTicksLimit: 6 } } } }
+    });
+  </script>
+{% endblock %}

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title if title else 'Safe Arbitrage Dashboard' }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <style>
+      :root {
+        --bg: #f6f2e9;
+        --panel: #fffdf8;
+        --ink: #141414;
+        --ink-soft: #4c4c4c;
+        --good: #1f7a42;
+        --bad: #b00020;
+        --warn: #9b6a00;
+        --line: #d9d2c2;
+        --accent: #0f8f96;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Space Grotesk", sans-serif;
+        background: radial-gradient(circle at top right, #efe7d4 0%, var(--bg) 55%, #ede3cc 100%);
+        color: var(--ink);
+      }
+      .wrap { max-width: 1400px; margin: 0 auto; padding: 20px; }
+      .hero {
+        background: linear-gradient(130deg, #183d3d, #2d5f5f);
+        color: #f7f7f2;
+        border-radius: 16px;
+        padding: 16px 20px;
+        box-shadow: 0 6px 20px rgba(24,61,61,.25);
+      }
+      .hero h1 { margin: 0 0 6px; font-size: 24px; }
+      .hero p { margin: 0; color: #d8e8e8; }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 14px;
+        margin-top: 14px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+        box-shadow: 0 3px 10px rgba(0,0,0,.03);
+      }
+      .kpis { grid-column: span 12; display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+      .kpi { background: #fdf9f0; border: 1px solid #e4dcc9; border-radius: 10px; padding: 10px; }
+      .kpi .label { color: var(--ink-soft); font-size: 12px; }
+      .kpi .value { font-family: "IBM Plex Mono", monospace; font-size: 16px; font-weight: 500; }
+      .wide { grid-column: span 12; }
+      .half { grid-column: span 6; }
+      .third { grid-column: span 4; }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      th, td {
+        text-align: left;
+        padding: 8px 6px;
+        border-bottom: 1px solid #efe7d6;
+        white-space: nowrap;
+      }
+      th { color: var(--ink-soft); font-weight: 500; }
+      .mono { font-family: "IBM Plex Mono", monospace; }
+      .good { color: var(--good); }
+      .bad { color: var(--bad); }
+      .warn { color: var(--warn); }
+      .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+      .btn {
+        border: 1px solid #bed7d7;
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: #f3fbfb;
+        color: #1f4d4d;
+        text-decoration: none;
+        font-size: 12px;
+      }
+      .status-pill {
+        padding: 4px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        display: inline-block;
+      }
+      .status-healthy { background: #dff3e7; color: #135d31; }
+      .status-stopped { background: #fde0e0; color: #8f1f1f; }
+      @media (max-width: 980px) {
+        .kpis { grid-template-columns: repeat(2, 1fr); }
+        .half, .third { grid-column: span 12; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      {% block content %}{% endblock %}
+    </div>
+  </body>
+</html>

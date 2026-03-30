@@ -1,0 +1,52 @@
+# Runbook
+
+## Startup
+
+1. Configure `.env` from `.env.example`.
+2. Apply migrations: `alembic upgrade head`.
+3. Start API/dashboard: `uvicorn app.main:app --host 0.0.0.0 --port 8000`.
+4. Verify: `GET /api/health` and dashboard load.
+
+## Operational Checks
+
+- `GET /api/status` confirms mode and pause flags
+- `GET /api/overview` confirms PnL/trade/health summary
+- Dashboard opportunities table shows block reasons
+
+## Manual Controls
+
+All control endpoints require `CONTROL_API_TOKEN`.
+
+- Pause globally: `POST /api/control/pause`
+- Resume: `POST /api/control/resume`
+- Stop all: `POST /api/control/stop-all`
+- Disable route: `POST /api/control/disable-route`
+- Enable route: `POST /api/control/enable-route`
+- Switch mode: `POST /api/control/switch-mode`
+
+## Live Enable Procedure (Conservative)
+
+1. Confirm allowlists are correct.
+2. Set `LIVE_ENABLE_FLAG=true`.
+3. Keep `LIVE_EXECUTION_ENABLED=false` during commissioning.
+4. Call `/api/control/switch-mode` with both control token and `live_confirmation_token`.
+5. Validate dry-run behavior, guard statuses, and alerting.
+6. Only after sign-off, enable real execution path (not enabled by default in this version).
+
+## Incident Response
+
+1. Trigger `stop-all` immediately.
+2. Review `blocked_reason`/`revert_reason`/alerts.
+3. Verify RPC/DB/gas/quote health.
+4. Re-enable routes one-by-one after root-cause confirmation.
+
+## Alert Events
+
+- startup
+- shutdown
+- strategy paused/resumed
+- kill switch triggered
+- trade executed/reverted
+- abnormal health
+- daily DD stop
+- depeg stop

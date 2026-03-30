@@ -1,0 +1,39 @@
+<h3>Opportunities</h3>
+<table>
+  <thead>
+    <tr>
+      <th>Time</th>
+      <th>Strategy</th>
+      <th>Pair</th>
+      <th>Direction</th>
+      <th>Venues/Route</th>
+      <th>Raw Edge bps</th>
+      <th>Modeled Edge bps</th>
+      <th>Expected PnL</th>
+      <th>Slippage bps</th>
+      <th>Gas (USDC)</th>
+      <th>Quote Age</th>
+      <th>Status</th>
+      <th>Blocked Reason</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in opportunities %}
+    <tr>
+      <td class="mono">{{ row.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+      <td>{{ row.strategy }}</td>
+      <td>{{ row.pair }}</td>
+      <td>{{ row.direction }}</td>
+      <td class="mono">{{ row.venues }}</td>
+      <td class="mono">{{ row.raw_edge_bps }}</td>
+      <td class="mono {{ 'bad' if row.modeled_edge_bps < 0 else 'good' }}">{{ row.modeled_edge_bps }}</td>
+      <td class="mono {{ 'bad' if row.expected_pnl_abs < 0 else 'good' }}">{{ row.expected_pnl_abs }}</td>
+      <td class="mono">{{ row.expected_slippage_bps }}</td>
+      <td class="mono">{{ row.gas_estimate_usdc }}</td>
+      <td class="mono">{{ row.quote_age_seconds }}</td>
+      <td>{{ row.status }}</td>
+      <td class="warn">{{ row.blocked_reason }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>

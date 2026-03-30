@@ -1,0 +1,78 @@
+[project]
+name = "safe-arbitrage-bot"
+version = "0.1.0"
+description = "Safety-first crypto arbitrage bot with dashboard"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Codex" }]
+dependencies = [
+  "fastapi>=0.111.0",
+  "uvicorn[standard]>=0.30.0",
+  "sqlalchemy>=2.0.32",
+  "alembic>=1.13.2",
+  "pydantic>=2.8.2",
+  "pydantic-settings>=2.3.4",
+  "jinja2>=3.1.4",
+  "python-multipart>=0.0.9",
+  "python-json-logger>=2.0.7",
+  "httpx>=0.27.0",
+  "web3>=6.20.1",
+  "eth-account>=0.11.2",
+  "psycopg[binary]>=3.2.1",
+  "asyncpg>=0.29.0",
+  "aiosqlite>=0.20.0",
+  "orjson>=3.10.6"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.2",
+  "pytest-asyncio>=0.24.0",
+  "pytest-cov>=5.0.0",
+  "mypy>=1.11.1",
+  "ruff>=0.6.1",
+  "pre-commit>=3.8.0",
+  "types-python-dateutil>=2.9.0.20240316",
+  "types-requests>=2.32.0.20240712",
+  "py-solc-x>=2.0.3",
+  "eth-tester>=0.11.0b2"
+]
+
+[build-system]
+requires = ["setuptools>=70.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["alembic"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unused_ignores = true
+strict_optional = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+plugins = []
+exclude = ["alembic"]
+
+[[tool.mypy.overrides]]
+module = ["alembic.*", "web3.*", "eth_account.*", "eth_tester.*", "solcx.*"]
+ignore_missing_imports = true
