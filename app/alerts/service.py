@@ -15,7 +15,7 @@ class AlertService:
         self.webhook_url = webhook_url
         self.failure_count = 0
 
-    async def send(self, session: AsyncSession, level: str, category: str, message: str) -> None:
+    async def send(self, session: AsyncSession, level: str, category: str, message: str) -> bool:
         sent = False
         err = ""
         if self.webhook_url:
@@ -34,3 +34,4 @@ class AlertService:
 
         session.add(Alert(run_id="system", level=level, category=category, message=message, sent=sent, error=err))
         await session.commit()
+        return sent

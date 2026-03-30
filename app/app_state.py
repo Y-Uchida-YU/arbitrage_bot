@@ -10,6 +10,7 @@ from app.contracts.client import ArbExecutorClient
 from app.exchanges.factory import build_cex_adapters, build_hyperevm_dex_adapters, build_shadow_dex_adapters
 from app.execution.live import LiveDryRunExecutionEngine
 from app.execution.paper import PaperExecutionEngine
+from app.health.collector import HealthCollector
 from app.jobs.runner import BotRunner
 from app.quote_engine.edge import ModeledEdgeCalculator
 from app.quote_engine.engine import HyperDexDexQuoteEngine, ShadowCexDexQuoteEngine
@@ -24,12 +25,14 @@ class AppState:
     risk_manager: GlobalRiskManager
     paper_engine: PaperExecutionEngine
     live_engine: LiveDryRunExecutionEngine
+    health_collector: HealthCollector
     runner: BotRunner
 
 
 def build_app_state(settings: Settings, session_factory: async_sessionmaker) -> AppState:
     alert_service = AlertService(settings.discord_webhook_url)
     risk_manager = GlobalRiskManager(settings)
+    health_collector = HealthCollector()
 
     edge = ModeledEdgeCalculator(settings)
     hyper_dex = build_hyperevm_dex_adapters(settings)
@@ -51,6 +54,7 @@ def build_app_state(settings: Settings, session_factory: async_sessionmaker) -> 
         shadow_engine=shadow_engine,
         paper_engine=paper_engine,
         live_engine=live_engine,
+        health_collector=health_collector,
     )
 
     return AppState(
@@ -60,5 +64,6 @@ def build_app_state(settings: Settings, session_factory: async_sessionmaker) -> 
         risk_manager=risk_manager,
         paper_engine=paper_engine,
         live_engine=live_engine,
+        health_collector=health_collector,
         runner=runner,
     )

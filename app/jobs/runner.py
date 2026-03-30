@@ -2,21 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import time
 from contextlib import suppress
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy.ext.asyncio import async_sessionmaker
+import httpx
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.alerts.service import AlertService
 from app.config.settings import RunMode, Settings
 from app.db.repository import Repository
 from app.execution.live import LiveDryRunExecutionEngine
 from app.execution.paper import PaperExecutionEngine
+from app.health.collector import HealthCollector
+from app.models.core import Route
 from app.quote_engine.engine import HyperDexDexQuoteEngine, ShadowCexDexQuoteEngine
-from app.risk.manager import GlobalRiskManager, HealthSnapshot
+from app.quote_engine.types import RouteQuote
+from app.risk.manager import FATAL_FAILURE_CATEGORIES, GlobalRiskManager
 from app.utils.logging import enrich_log_kwargs
 from app.utils.metrics import metrics_store
 
@@ -34,6 +38,7 @@ class BotRunner:
         shadow_engine: ShadowCexDexQuoteEngine,
         paper_engine: PaperExecutionEngine,
         live_engine: LiveDryRunExecutionEngine,
+        health_collector: HealthCollector,
     ) -> None:
         self.settings = settings
         self.session_factory = session_factory
@@ -43,6 +48,7 @@ class BotRunner:
         self.shadow_engine = shadow_engine
         self.paper_engine = paper_engine
         self.live_engine = live_engine
+        self.health_collector = health_collector
         self._tasks: list[asyncio.Task] = []
         self._stop_event = asyncio.Event()
         self.last_heartbeat: datetime = datetime.now(timezone.utc)
@@ -54,7 +60,8 @@ class BotRunner:
             asyncio.create_task(self._health_loop(), name="health_loop"),
         ]
         async with self.session_factory() as session:
-            await self.alert_service.send(session, "INFO", "startup", "bot runner started")
+            sent = await self.alert_service.send(session, "INFO", "startup", "bot runner started")
+            self.health_collector.record_alert_result(sent)
 
     async def stop(self) -> None:
         self._stop_event.set()
@@ -65,11 +72,15 @@ class BotRunner:
                 await task
         self._tasks.clear()
         async with self.session_factory() as session:
-            await self.alert_service.send(session, "INFO", "shutdown", "bot runner stopped")
+            sent = await self.alert_service.send(session, "INFO", "shutdown", "bot runner stopped")
+            self.health_collector.record_alert_result(sent)
 
     async def _scan_loop(self) -> None:
         while not self._stop_event.is_set():
             loop_start = time.perf_counter()
+            self.last_heartbeat = datetime.now(timezone.utc)
+            self.health_collector.set_heartbeat(self.last_heartbeat)
+
             try:
                 async with self.session_factory() as session:
                     repo = Repository(session)
@@ -79,161 +90,223 @@ class BotRunner:
 
                     routes = await repo.get_routes(enabled_only=True)
                     wallet_balance = await repo.get_wallet_usdc_balance()
+
                     if self.risk_manager.should_stop_for_daily_dd(wallet_balance):
                         self.risk_manager.set_global_kill(True)
                         await repo.set_global_pause(True)
                         await repo.write_kill_switch_event("global", "global", "trigger", "daily_dd_stop")
-                        await self.alert_service.send(
+                        sent = await self.alert_service.send(
                             session,
                             "WARN",
                             "daily_dd_stop",
                             "daily drawdown threshold reached; new entries stopped",
                         )
+                        self.health_collector.record_alert_result(sent)
 
                     for route in routes:
+                        strategy_mode = current_mode if route.strategy == "hyperevm_dex_dex" else RunMode.PAPER
+                        stale_limit = (
+                            self.settings.global_stale_quote_stop_seconds
+                            if route.strategy == "hyperevm_dex_dex"
+                            else self.settings.shadow_stale_quote_seconds
+                        )
+
+                        quote: RouteQuote
+                        quote_start = time.perf_counter()
                         try:
                             if route.strategy == "hyperevm_dex_dex":
                                 amount = min(route.max_notional_usdc, self.settings.live_max_notional_usdc)
-                                quote = await self.hyper_engine.quote_route(route, amount)
-                                strategy_mode = current_mode
-                                stale_limit = self.settings.global_stale_quote_stop_seconds
+                                quote = await self.hyper_engine.quote_route(route, amount, mode_profile=strategy_mode)
                             elif route.strategy == "base_virtual_shadow":
                                 quote = await self.shadow_engine.quote_route(route, self.settings.shadow_notional_usdc)
-                                strategy_mode = RunMode.PAPER
-                                stale_limit = self.settings.shadow_stale_quote_seconds
                             else:
                                 continue
 
-                            health = self._build_health_snapshot()
-                            smaller_pool = Decimal("450000")
+                            q_latency_ms = Decimal(str((time.perf_counter() - quote_start) * 1000))
+                            self.health_collector.record_quote_probe(
+                                venue=route.venue_a,
+                                latency_ms=q_latency_ms,
+                                quote_age_seconds=quote.quote_age_seconds,
+                                ok=True,
+                                quote_unavailable=False,
+                            )
+                            self.health_collector.record_quote_probe(
+                                venue=route.venue_b,
+                                latency_ms=q_latency_ms,
+                                quote_age_seconds=quote.quote_age_seconds,
+                                ok=True,
+                                quote_unavailable=False,
+                            )
+                            liq = Decimal(quote.metadata.get("smaller_pool_liquidity_usdc", "0"))
+                            self.health_collector.record_liquidity(route.id, liq)
 
-                            decision = self.risk_manager.evaluate(
-                                quote=quote,
-                                mode=strategy_mode,
-                                quote_freshness_limit=stale_limit,
-                                health=health,
-                                wallet_balance_usdc=wallet_balance,
-                                reference_deviation_bps=quote.raw_edge_bps,
-                                depeg_detected=False,
-                                smaller_pool_liquidity_usdc=smaller_pool,
+                        except Exception as quote_exc:
+                            quote = self._build_unavailable_quote(route, strategy_mode, str(quote_exc))
+                            q_latency_ms = Decimal(str((time.perf_counter() - quote_start) * 1000))
+                            self.health_collector.record_quote_probe(
+                                venue=route.venue_a,
+                                latency_ms=q_latency_ms,
+                                quote_age_seconds=quote.quote_age_seconds,
+                                ok=False,
+                                quote_unavailable=True,
+                            )
+                            self.health_collector.record_quote_probe(
+                                venue=route.venue_b,
+                                latency_ms=q_latency_ms,
+                                quote_age_seconds=quote.quote_age_seconds,
+                                ok=False,
+                                quote_unavailable=True,
                             )
 
-                            status = "eligible" if decision.tradable else "blocked"
-                            opp = await repo.insert_opportunity(
-                                quote,
-                                mode=strategy_mode.value,
-                                status=status,
-                                blocked_reason=decision.blocked_reason,
-                            )
+                        health = self.health_collector.to_risk_snapshot(route.id)
+                        smaller_pool = Decimal(quote.metadata.get("smaller_pool_liquidity_usdc", "0"))
 
-                            if not decision.tradable:
-                                logger.info(
-                                    "opportunity_blocked",
-                                    **enrich_log_kwargs(
-                                        strategy=route.strategy,
-                                        pair=route.pair,
-                                        route=route.id,
-                                        mode=strategy_mode.value,
-                                        action="blocked",
-                                        opportunity_id=opp.id,
-                                    ),
+                        decision = self.risk_manager.evaluate(
+                            quote=quote,
+                            mode=strategy_mode,
+                            quote_freshness_limit=stale_limit,
+                            health=health,
+                            wallet_balance_usdc=wallet_balance,
+                            reference_deviation_bps=quote.raw_edge_bps,
+                            depeg_detected=False,
+                            smaller_pool_liquidity_usdc=smaller_pool,
+                        )
+                        quote.metadata["risk_checks"] = ",".join(
+                            [f"{k}:{'1' if v else '0'}" for k, v in sorted(decision.checks.items())]
+                        )
+
+                        status = "eligible" if decision.tradable else "blocked"
+                        opp = await repo.insert_opportunity(
+                            quote,
+                            mode=strategy_mode.value,
+                            status=status,
+                            blocked_reason=decision.blocked_reason,
+                        )
+
+                        if not decision.tradable:
+                            if decision.blocked_reason in FATAL_FAILURE_CATEGORIES:
+                                self.risk_manager.mark_failure(
+                                    route.id,
+                                    category=decision.blocked_reason,
+                                    reason=f"opportunity blocked: {decision.blocked_reason}",
                                 )
-                                if decision.blocked_reason == "depeg_guard":
-                                    await self.alert_service.send(
-                                        session,
-                                        "WARN",
-                                        "depeg_stop",
-                                        f"route={route.name} blocked by depeg guard",
-                                    )
-                                if decision.blocked_reason in {"gas_spike", "rpc_error_spike", "pool_unhealthy"}:
-                                    await self.alert_service.send(
-                                        session,
-                                        "WARN",
-                                        "abnormal_health",
-                                        f"route={route.name} blocked_reason={decision.blocked_reason}",
-                                    )
-                                continue
-
-                            if strategy_mode == RunMode.STOPPED:
-                                continue
-
-                            attempt = await repo.insert_trade_attempt(
-                                opportunity_id=opp.id,
-                                route_id=route.id,
-                                strategy=route.strategy,
-                                mode=strategy_mode.value,
-                                input_amount=quote.initial_amount,
-                                expected_output_amount=quote.final_amount,
-                                expected_pnl=quote.modeled_net_edge_amount,
-                                status="submitted",
-                            )
-
-                            if strategy_mode == RunMode.PAPER:
-                                execution_result = await self.paper_engine.execute(quote)
-                                realized = Decimal(str(execution_result.get("realized_pnl", "0")))
-                                tx_status = "success" if bool(execution_result.get("ok")) else "failed"
-                                tx_hash = str(execution_result.get("tx_hash", "paper"))
-                            else:
-                                execution_result = await self.live_engine.dry_run(quote)
-                                realized = Decimal("0")
-                                tx_status = "dry_run"
-                                tx_hash = "live-dry-run"
-
-                            await repo.insert_execution(
-                                attempt_id=attempt.id,
-                                route_id=route.id,
-                                strategy=route.strategy,
-                                mode=strategy_mode.value,
-                                tx_status=tx_status,
-                                tx_hash=tx_hash,
-                                input_amount=quote.initial_amount,
-                                output_amount=quote.final_amount,
-                                expected_pnl=quote.modeled_net_edge_amount,
-                                realized_pnl=realized,
-                                notes=str(execution_result),
-                            )
-
-                            if tx_status in {"failed", "reverted"}:
-                                self.risk_manager.mark_failure(route.id)
-                                await self.alert_service.send(
-                                    session,
-                                    "ERROR",
-                                    "trade_reverted",
-                                    f"route={route.name} tx_status={tx_status}",
-                                )
-                            else:
-                                self.risk_manager.mark_success(route.id, realized)
-                                await self.alert_service.send(
-                                    session,
-                                    "INFO",
-                                    "trade_executed",
-                                    f"route={route.name} tx_status={tx_status}",
-                                )
-
-                        except Exception as route_exc:
-                            self.risk_manager.mark_failure(route.id)
-                            logger.exception(
-                                "route_scan_failed",
+                            logger.info(
+                                "opportunity_blocked",
                                 **enrich_log_kwargs(
                                     strategy=route.strategy,
                                     pair=route.pair,
                                     route=route.id,
-                                    action="scan_error",
+                                    mode=strategy_mode.value,
+                                    action="blocked",
+                                    opportunity_id=opp.id,
                                 ),
                             )
-                            await self.alert_service.send(
+                            continue
+
+                        if strategy_mode == RunMode.STOPPED:
+                            continue
+
+                        attempt = await repo.insert_trade_attempt(
+                            opportunity_id=opp.id,
+                            route_id=route.id,
+                            strategy=route.strategy,
+                            mode=strategy_mode.value,
+                            input_amount=quote.initial_amount,
+                            expected_output_amount=quote.final_amount,
+                            expected_pnl=quote.modeled_net_edge_amount,
+                            status="submitted",
+                            failure_category="",
+                            is_fatal_failure=False,
+                            cooldown_triggered=False,
+                        )
+
+                        failure_category = ""
+                        execution_result: dict[str, str | bool]
+                        if strategy_mode == RunMode.PAPER:
+                            execution_result = await self.paper_engine.execute(quote)
+                            realized = Decimal(str(execution_result.get("realized_pnl", "0")))
+                            tx_status = "success" if bool(execution_result.get("ok")) else "failed"
+                            tx_hash = str(execution_result.get("tx_hash", "paper"))
+                            if tx_status == "failed":
+                                failure_category = "revert"
+                        else:
+                            execution_result = await self.live_engine.dry_run(quote)
+                            if bool(execution_result.get("ok")):
+                                tx_status = "dry_run"
+                                failure_category = ""
+                            else:
+                                tx_status = "dry_run_blocked"
+                                failure_category = str(execution_result.get("blocked_reason", "scan_fatal"))
+                            tx_hash = "live-dry-run"
+                            realized = Decimal("0")
+
+                        category = failure_category or ""
+                        is_failed = tx_status in {"failed", "reverted", "dry_run_blocked"}
+                        if is_failed:
+                            category = category or "scan_fatal"
+                            self.risk_manager.mark_failure(
+                                route.id,
+                                category=category,
+                                reason=f"tx_status={tx_status}",
+                            )
+                        else:
+                            self.risk_manager.mark_success(route.id, realized)
+
+                        cooldown_triggered = self.risk_manager.cooldown_remaining_seconds(route.id) > 0
+                        fatal_failure = category in FATAL_FAILURE_CATEGORIES if category else False
+                        attempt_status = tx_status
+
+                        await repo.update_trade_attempt_outcome(
+                            attempt_id=attempt.id,
+                            status=attempt_status,
+                            blocked_reason=category if is_failed else "",
+                            failure_category=category if is_failed else "",
+                            is_fatal_failure=fatal_failure if is_failed else False,
+                            cooldown_triggered=cooldown_triggered if is_failed else False,
+                            notes=f"result={execution_result}",
+                        )
+
+                        await repo.insert_execution(
+                            attempt_id=attempt.id,
+                            route_id=route.id,
+                            strategy=route.strategy,
+                            mode=strategy_mode.value,
+                            tx_status=tx_status,
+                            tx_hash=tx_hash,
+                            input_amount=quote.initial_amount,
+                            output_amount=quote.final_amount,
+                            expected_pnl=quote.modeled_net_edge_amount,
+                            realized_pnl=realized,
+                            failure_category=category,
+                            is_fatal_failure=fatal_failure,
+                            cooldown_triggered=cooldown_triggered,
+                            notes=f"failure_category={category};result={execution_result}",
+                        )
+                        self.health_collector.record_execution_result(tx_status)
+
+                        if is_failed:
+                            sent = await self.alert_service.send(
                                 session,
                                 "ERROR",
-                                "route_scan",
-                                f"route={route.name} error={route_exc}",
+                                "trade_reverted",
+                                f"route={route.name} tx_status={tx_status} category={category}",
                             )
+                            self.health_collector.record_alert_result(sent)
+                        else:
+                            sent = await self.alert_service.send(
+                                session,
+                                "INFO",
+                                "trade_executed",
+                                f"route={route.name} tx_status={tx_status}",
+                            )
+                            self.health_collector.record_alert_result(sent)
 
             except Exception as exc:
                 logger.exception("scan_loop_failed", **enrich_log_kwargs(action="scan_loop_error"))
                 async with self.session_factory() as session:
-                    await self.alert_service.send(session, "ERROR", "scan_loop", f"scan loop failure: {exc}")
+                    sent = await self.alert_service.send(session, "ERROR", "scan_loop", f"scan loop failure: {exc}")
+                    self.health_collector.record_alert_result(sent)
 
-            self.last_heartbeat = datetime.now(timezone.utc)
             elapsed = time.perf_counter() - loop_start
             sleep_for = max(0.1, self.settings.quote_poll_interval_seconds - elapsed)
             await asyncio.sleep(sleep_for)
@@ -243,61 +316,127 @@ class BotRunner:
             try:
                 async with self.session_factory() as session:
                     repo = Repository(session)
-                    rpc_latency_ms = Decimal(str(40 + random.randint(0, 30)))
-                    rpc_error_rate = Decimal("0.01")
-                    db_latency_ms = Decimal(str(10 + random.randint(0, 5)))
-                    quote_latency_ms = Decimal(str(20 + random.randint(0, 8)))
-                    gas_now = Decimal("0.04")
-                    dashboard_refresh_latency_ms = Decimal(str(25 + random.randint(0, 5)))
-                    market_data_staleness_sec = Decimal("0.5")
-                    venue_health = Decimal("1")
-                    heartbeat_lag_sec = Decimal(
-                        str((datetime.now(timezone.utc) - self.last_heartbeat).total_seconds())
+
+                    rpc_latency_hyper, rpc_ok_hyper = await self._probe_rpc(self.settings.hyperevm_rpc_url)
+                    rpc_latency_base, rpc_ok_base = await self._probe_rpc(self.settings.base_rpc_url)
+                    combined_rpc_latency = (
+                        (rpc_latency_hyper + rpc_latency_base) / Decimal("2")
+                        if rpc_ok_hyper and rpc_ok_base
+                        else (rpc_latency_hyper if rpc_ok_hyper else rpc_latency_base)
                     )
-                    alert_send_success_rate = Decimal("1") if self.alert_service.failure_count == 0 else Decimal("0.5")
+                    self.health_collector.record_rpc_probe(combined_rpc_latency, rpc_ok_hyper and rpc_ok_base)
 
-                    metrics_store.record("rpc_latency_ms", rpc_latency_ms)
-                    metrics_store.record("rpc_error_rate", rpc_error_rate)
-                    metrics_store.record("db_latency_ms", db_latency_ms)
-                    metrics_store.record("quote_latency_ms", quote_latency_ms)
-                    metrics_store.record("gas_now", gas_now)
-                    metrics_store.record("dashboard_refresh_latency_ms", dashboard_refresh_latency_ms)
-                    metrics_store.record("market_data_staleness_sec", market_data_staleness_sec)
-                    metrics_store.record("venue_health", venue_health)
-                    metrics_store.record("heartbeat_lag_sec", heartbeat_lag_sec)
-                    metrics_store.record("alert_send_success_rate", alert_send_success_rate)
+                    db_latency = await self._probe_db_latency(session)
+                    self.health_collector.record_db_latency(db_latency)
 
-                    await repo.write_health_metric("rpc_latency_ms", rpc_latency_ms)
-                    await repo.write_health_metric("rpc_error_rate", rpc_error_rate)
-                    await repo.write_health_metric("db_latency_ms", db_latency_ms)
-                    await repo.write_health_metric("quote_latency_ms", quote_latency_ms)
-                    await repo.write_health_metric("gas_now", gas_now)
-                    await repo.write_health_metric("dashboard_refresh_latency_ms", dashboard_refresh_latency_ms)
-                    await repo.write_health_metric("market_data_staleness_sec", market_data_staleness_sec)
-                    await repo.write_health_metric("venue_health", venue_health)
-                    await repo.write_health_metric("heartbeat_lag_sec", heartbeat_lag_sec)
-                    await repo.write_health_metric("alert_send_success_rate", alert_send_success_rate)
+                    gas_gwei = await self._probe_gas_gwei(self.settings.hyperevm_rpc_url)
+                    self.health_collector.record_gas(gas_gwei)
+
+                    global_snapshot = self.health_collector.build_snapshot("global")
+                    metrics_store.record("rpc_latency_ms", global_snapshot.rpc_latency_ms)
+                    metrics_store.record("rpc_error_rate", global_snapshot.rpc_error_rate_5m)
+                    metrics_store.record("db_latency_ms", global_snapshot.db_latency_ms)
+                    metrics_store.record("quote_latency_ms", global_snapshot.quote_latency_ms)
+                    metrics_store.record("gas_now", global_snapshot.gas_now)
+                    metrics_store.record("gas_p50", global_snapshot.gas_p50)
+                    metrics_store.record("gas_p90", global_snapshot.gas_p90)
+                    metrics_store.record("liquidity_change_pct", global_snapshot.liquidity_change_pct)
+                    metrics_store.record("quote_age_seconds", global_snapshot.quote_age_seconds)
+                    metrics_store.record("alert_send_success_rate", global_snapshot.alert_send_success_rate)
+                    metrics_store.record("contract_revert_rate", global_snapshot.contract_revert_rate)
+                    metrics_store.record("market_data_staleness_seconds", global_snapshot.market_data_staleness_seconds)
+                    metrics_store.record("heartbeat_lag_seconds", global_snapshot.heartbeat_lag_seconds)
+                    metrics_store.record("quote_unavailable_count", Decimal(len(global_snapshot.quote_unavailable_venues)))
+
+                    await repo.write_health_metric("rpc_latency_ms", global_snapshot.rpc_latency_ms)
+                    await repo.write_health_metric("rpc_error_rate", global_snapshot.rpc_error_rate_5m)
+                    await repo.write_health_metric("db_latency_ms", global_snapshot.db_latency_ms)
+                    await repo.write_health_metric("quote_latency_ms", global_snapshot.quote_latency_ms)
+                    await repo.write_health_metric("gas_now", global_snapshot.gas_now)
+                    await repo.write_health_metric("gas_p50", global_snapshot.gas_p50)
+                    await repo.write_health_metric("gas_p90", global_snapshot.gas_p90)
+                    await repo.write_health_metric("liquidity_change_pct", global_snapshot.liquidity_change_pct)
+                    await repo.write_health_metric("quote_age_seconds", global_snapshot.quote_age_seconds)
+                    await repo.write_health_metric("alert_send_success_rate", global_snapshot.alert_send_success_rate)
+                    await repo.write_health_metric("contract_revert_rate", global_snapshot.contract_revert_rate)
+                    await repo.write_health_metric("market_data_staleness_seconds", global_snapshot.market_data_staleness_seconds)
+                    await repo.write_health_metric("heartbeat_lag_seconds", global_snapshot.heartbeat_lag_seconds)
+                    await repo.write_health_metric("quote_unavailable_count", Decimal(len(global_snapshot.quote_unavailable_venues)))
             except Exception:
                 logger.exception("health_loop_failed", **enrich_log_kwargs(action="health_loop_error"))
 
             await asyncio.sleep(self.settings.health_poll_interval_seconds)
 
-    def _build_health_snapshot(self) -> HealthSnapshot:
-        gas_now = metrics_store.latest("gas_now") or Decimal("0.04")
-        gas_p90 = Decimal("0.05")
-        return HealthSnapshot(
-            rpc_error_rate_5m=metrics_store.latest("rpc_error_rate") or Decimal("0.01"),
-            gas_now=gas_now,
-            gas_p90=gas_p90,
-            liquidity_change_pct=Decimal("0.01"),
-            quote_stale_seconds=Decimal("0"),
-            alert_failures=self.alert_service.failure_count,
-            db_reachable=True,
-            rpc_reachable=True,
-            signing_ok=True,
-            fee_known=True,
-            quote_match=True,
-            balance_match=True,
-            clock_skew_ok=True,
-            contract_revert_rate=Decimal("0.01"),
+    async def _probe_rpc(self, rpc_url: str) -> tuple[Decimal, bool]:
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "eth_blockNumber",
+            "params": [],
+            "id": 1,
+        }
+        start = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                response = await client.post(rpc_url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+            ok = data.get("result") is not None and data.get("error") is None
+            latency = Decimal(str((time.perf_counter() - start) * 1000))
+            return latency, ok
+        except Exception:
+            latency = Decimal(str((time.perf_counter() - start) * 1000))
+            return latency, False
+
+    async def _probe_gas_gwei(self, rpc_url: str) -> Decimal:
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "eth_gasPrice",
+            "params": [],
+            "id": 2,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                response = await client.post(rpc_url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+            result = data.get("result")
+            if not result:
+                return Decimal("0")
+            wei = int(result, 16)
+            return (Decimal(wei) / Decimal("1000000000")).quantize(Decimal("0.000001"))
+        except Exception:
+            return Decimal("0")
+
+    async def _probe_db_latency(self, session: AsyncSession) -> Decimal:
+        start = time.perf_counter()
+        await session.execute(text("SELECT 1"))
+        return Decimal(str((time.perf_counter() - start) * 1000))
+
+    def _build_unavailable_quote(self, route: Route, strategy_mode: RunMode, reason: str) -> RouteQuote:
+        return RouteQuote(
+            route_id=route.id,
+            strategy=route.strategy,
+            pair=route.pair,
+            direction=route.direction,
+            initial_amount=Decimal("0"),
+            final_amount=Decimal("0"),
+            raw_spread_amount=Decimal("0"),
+            raw_edge_bps=Decimal("0"),
+            modeled_net_edge_amount=Decimal("0"),
+            modeled_net_edge_bps=Decimal("0"),
+            expected_slippage_bps=Decimal("0"),
+            gas_cost_usdc=Decimal("0"),
+            quote_age_seconds=Decimal("999"),
+            all_costs=Decimal("0"),
+            persisted_seconds=Decimal("0"),
+            status="blocked",
+            blocked_reason="quote_unavailable",
+            metadata={
+                "pool_health": "false",
+                "quote_unavailable": "true",
+                "quote_unavailable_reason": reason,
+                "smaller_pool_liquidity_usdc": "0",
+                "venues": f"{route.venue_a}->{route.venue_b}",
+                "mode_profile": strategy_mode.value,
+            },
         )
