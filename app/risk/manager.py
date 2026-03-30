@@ -32,10 +32,26 @@ class RouteStats:
     consecutive_failures: int = 0
     consecutive_losses: int = 0
     executions: deque[datetime] | None = None
+    last_failure_category: str = ""
+    last_failure_reason: str = ""
+    last_failure_at: datetime | None = None
+    last_failure_fatal: bool = False
 
     def __post_init__(self) -> None:
         if self.executions is None:
             self.executions = deque()
+
+
+FATAL_FAILURE_CATEGORIES: set[str] = {
+    "quote_mismatch",
+    "revert",
+    "invalid_address",
+    "chain_id_mismatch",
+    "router_allowlist_violation",
+    "stale_critical_data",
+    "quote_unavailable",
+    "scan_fatal",
+}
 
 
 class GlobalRiskManager:
@@ -87,22 +103,53 @@ class GlobalRiskManager:
     def clear_cooldown(self, route_id: str | None = None) -> None:
         if route_id:
             self.cooldown_until.pop(route_id, None)
+            stats = self.route_stats[route_id]
+            stats.consecutive_failures = 0
+            stats.last_failure_category = ""
+            stats.last_failure_reason = ""
+            stats.last_failure_at = None
+            stats.last_failure_fatal = False
             return
         self.cooldown_until.clear()
+        for stats in self.route_stats.values():
+            stats.consecutive_failures = 0
+            stats.last_failure_category = ""
+            stats.last_failure_reason = ""
+            stats.last_failure_at = None
+            stats.last_failure_fatal = False
 
-    def mark_failure(self, route_id: str) -> None:
+    def mark_failure(self, route_id: str, category: str, reason: str = "") -> None:
         stats = self.route_stats[route_id]
         stats.consecutive_failures += 1
-        self.cooldown_until[route_id] = datetime.now(timezone.utc) + timedelta(seconds=30)
+        stats.last_failure_category = category
+        stats.last_failure_reason = reason
+        stats.last_failure_at = datetime.now(timezone.utc)
+        stats.last_failure_fatal = category in FATAL_FAILURE_CATEGORIES
+
+        cooldown = (
+            self.settings.route_fatal_failure_cooldown_seconds
+            if stats.last_failure_fatal
+            else self.settings.route_failure_cooldown_seconds
+        )
+        self.cooldown_until[route_id] = datetime.now(timezone.utc) + timedelta(seconds=cooldown)
+
+        if stats.last_failure_fatal:
+            self.route_paused.add(route_id)
 
     def mark_success(self, route_id: str, realized_pnl: Decimal) -> None:
         self.reset_daily_if_needed()
         stats = self.route_stats[route_id]
         stats.consecutive_failures = 0
+        stats.last_failure_category = ""
+        stats.last_failure_reason = ""
+        stats.last_failure_at = None
+        stats.last_failure_fatal = False
+
         if realized_pnl < 0:
             stats.consecutive_losses += 1
         else:
             stats.consecutive_losses = 0
+
         self.daily_realized_pnl += realized_pnl
         now = datetime.now(timezone.utc)
         stats.executions.append(now)
@@ -115,6 +162,26 @@ class GlobalRiskManager:
             return True
         dd = -self.daily_realized_pnl / balance_baseline
         return dd >= self.settings.global_daily_dd_stop_pct
+
+    def cooldown_remaining_seconds(self, route_id: str) -> int:
+        until = self.cooldown_until.get(route_id)
+        if until is None:
+            return 0
+        delta = int((until - datetime.now(timezone.utc)).total_seconds())
+        return max(delta, 0)
+
+    def get_route_state(self, route_id: str) -> dict[str, str | int | bool]:
+        stats = self.route_stats[route_id]
+        return {
+            "route_id": route_id,
+            "consecutive_failures": stats.consecutive_failures,
+            "consecutive_losses": stats.consecutive_losses,
+            "last_failure_category": stats.last_failure_category,
+            "last_failure_reason": stats.last_failure_reason,
+            "last_failure_fatal": stats.last_failure_fatal,
+            "cooldown_remaining_seconds": self.cooldown_remaining_seconds(route_id),
+            "route_paused": route_id in self.route_paused,
+        }
 
     def evaluate(
         self,
@@ -129,7 +196,6 @@ class GlobalRiskManager:
     ) -> OpportunityDecision:
         checks: dict[str, bool] = {}
 
-        # Global hard stops
         checks["global_pause"] = not self.global_kill_switch
         if not checks["global_pause"]:
             return OpportunityDecision(False, "global_pause", checks)
@@ -188,7 +254,10 @@ class GlobalRiskManager:
         if not checks["venue_pause"]:
             return OpportunityDecision(False, "venue_disabled", checks)
 
-        # Data quality
+        checks["quote_unavailable"] = quote.metadata.get("quote_unavailable", "false") != "true"
+        if not checks["quote_unavailable"]:
+            return OpportunityDecision(False, "quote_unavailable", checks)
+
         checks["quote_fresh"] = quote.quote_age_seconds <= Decimal(quote_freshness_limit)
         if not checks["quote_fresh"]:
             return OpportunityDecision(False, "stale_quote", checks)
@@ -218,8 +287,9 @@ class GlobalRiskManager:
         if not checks["notional_limit"]:
             return OpportunityDecision(False, "notional_too_large", checks)
 
-        if smaller_pool_liquidity_usdc <= 0:
-            return OpportunityDecision(False, "liquidity_too_low", checks)
+        checks["liquidity_available"] = smaller_pool_liquidity_usdc > 0
+        if not checks["liquidity_available"]:
+            return OpportunityDecision(False, "liquidity_unavailable", checks)
 
         checks["pool_share_limit"] = (
             quote.initial_amount / smaller_pool_liquidity_usdc <= self.settings.live_max_notional_pct_of_smaller_pool
@@ -241,13 +311,14 @@ class GlobalRiskManager:
         if not checks["route_rate_limit"]:
             return OpportunityDecision(False, "cooldown", checks)
 
+        # strict semantics: threshold=1 blocks after first failure
         checks["consecutive_failures"] = (
-            stats.consecutive_failures <= self.settings.live_max_consecutive_failures_per_route
+            stats.consecutive_failures < self.settings.live_max_consecutive_failures_per_route
         )
         if not checks["consecutive_failures"]:
             return OpportunityDecision(False, "too_many_failures", checks)
 
-        checks["consecutive_losses"] = stats.consecutive_losses <= self.settings.live_max_consecutive_losses_per_route
+        checks["consecutive_losses"] = stats.consecutive_losses < self.settings.live_max_consecutive_losses_per_route
         if not checks["consecutive_losses"]:
             return OpportunityDecision(False, "too_many_losses", checks)
 
