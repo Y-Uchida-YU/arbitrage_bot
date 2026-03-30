@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from app.config.settings import Settings
+from app.config.settings import RunMode, Settings
 from app.exchanges.cex.base import CEXAdapter
 from app.exchanges.dex.base import DEXAdapter
+from app.exchanges.errors import QuoteUnavailableError
 from app.models.core import Route
 from app.quote_engine.edge import ModeledEdgeCalculator
 from app.quote_engine.types import RouteQuote
@@ -24,11 +25,17 @@ class HyperDexDexQuoteEngine:
         self.dex_adapters = dex_adapters
         self._edge_started_at: dict[str, datetime] = {}
 
-    async def quote_route(self, route: Route, amount_in: Decimal) -> RouteQuote:
+    async def quote_route(self, route: Route, amount_in: Decimal, mode_profile: RunMode) -> RouteQuote:
         start = datetime.now(timezone.utc)
 
         adapter_a = self.dex_adapters[route.venue_a]
         adapter_b = self.dex_adapters[route.venue_b]
+
+        if not adapter_a.supported or not adapter_b.supported:
+            raise QuoteUnavailableError(
+                "quote_unavailable",
+                f"unsupported adapter route={route.name} a={adapter_a.support_reason} b={adapter_b.support_reason}",
+            )
 
         out_leg1 = await adapter_a.quote_exact_input("USDC", "USDT0", amount_in)
         out_leg2 = await adapter_b.quote_exact_input("USDT0", "USDC", out_leg1)
@@ -53,10 +60,20 @@ class HyperDexDexQuoteEngine:
         end = datetime.now(timezone.utc)
         quote_age_seconds = Decimal((end - start).total_seconds())
         slippage_bps = Decimal("1")
-        persisted_seconds = self._update_persistence(route.id, edge.modeled_net_edge_bps, is_live=True)
+        persisted_seconds = self._update_persistence(
+            route.id,
+            edge.modeled_net_edge_bps,
+            use_live_profile=(mode_profile == RunMode.LIVE),
+        )
 
         pool_health_a = await adapter_a.is_pool_healthy(route.pool_a)
         pool_health_b = await adapter_b.is_pool_healthy(route.pool_b)
+        liq_a = await adapter_a.get_liquidity_snapshot(route.pool_a)
+        liq_b = await adapter_b.get_liquidity_snapshot(route.pool_b)
+        smaller_pool_liquidity_usdc = min(
+            liq_a.get("liquidity_usd", Decimal("0")),
+            liq_b.get("liquidity_usd", Decimal("0")),
+        )
 
         return RouteQuote(
             route_id=route.id,
@@ -77,6 +94,10 @@ class HyperDexDexQuoteEngine:
             metadata={
                 "pool_health": str(pool_health_a and pool_health_b).lower(),
                 "venues": f"{route.venue_a}->{route.venue_b}",
+                "smaller_pool_liquidity_usdc": str(smaller_pool_liquidity_usdc),
+                "pool_a_liquidity_usdc": str(liq_a.get("liquidity_usd", Decimal("0"))),
+                "pool_b_liquidity_usdc": str(liq_b.get("liquidity_usd", Decimal("0"))),
+                "quote_source": "mock" if self.settings.use_mock_market_data else "real",
             },
         )
 
@@ -88,8 +109,8 @@ class HyperDexDexQuoteEngine:
         gas_native = Decimal(gas_units) * self.settings.gas_price_gwei_default * Decimal("0.000000001")
         return (gas_native * self.settings.gas_token_price_usdc).quantize(Decimal("0.00000001"))
 
-    def _update_persistence(self, route_id: str, modeled_edge_bps: Decimal, is_live: bool) -> Decimal:
-        threshold = Decimal(self.settings.live_min_net_edge_bps if is_live else self.settings.shadow_min_net_edge_bps)
+    def _update_persistence(self, route_id: str, modeled_edge_bps: Decimal, use_live_profile: bool) -> Decimal:
+        threshold = Decimal(self.settings.live_min_net_edge_bps if use_live_profile else self.settings.shadow_min_net_edge_bps)
         now = datetime.now(timezone.utc)
         if modeled_edge_bps >= threshold:
             first_seen = self._edge_started_at.setdefault(route_id, now)
@@ -118,6 +139,13 @@ class ShadowCexDexQuoteEngine:
         cex = self.cex_adapters[route.venue_a]
         dex = self.dex_adapters[route.venue_b]
 
+        if not dex.supported:
+            raise QuoteUnavailableError("quote_unavailable", f"dex unsupported {route.venue_b}: {dex.support_reason}")
+
+        status = await cex.get_market_status("VIRTUALUSDC")
+        if status != "trading":
+            raise QuoteUnavailableError("quote_unavailable", f"cex market not trading: {route.venue_a} status={status}")
+
         virtual_amount = await dex.quote_exact_input("USDC", "VIRTUAL", amount_in_usdc)
         cex_bid, _cex_ask = await cex.get_best_bid_ask("VIRTUALUSDC")
 
@@ -142,6 +170,7 @@ class ShadowCexDexQuoteEngine:
         quote_age_seconds = Decimal((end - start).total_seconds())
         persisted_seconds = self._update_persistence(route.id, edge.modeled_net_edge_bps)
         pool_health = await dex.is_pool_healthy(route.pool_b)
+        pool_liq = await dex.get_liquidity_snapshot(route.pool_b)
 
         return RouteQuote(
             route_id=route.id,
@@ -162,6 +191,8 @@ class ShadowCexDexQuoteEngine:
             metadata={
                 "pool_health": str(pool_health).lower(),
                 "venues": f"{route.venue_a}->{route.venue_b}",
+                "smaller_pool_liquidity_usdc": str(pool_liq.get("liquidity_usd", Decimal("0"))),
+                "quote_source": "mock" if self.settings.use_mock_market_data else "real",
             },
         )
 

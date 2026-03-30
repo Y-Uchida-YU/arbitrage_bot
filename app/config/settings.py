@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./arbitrage.db"
     sql_echo: bool = False
+    auto_create_schema: bool = False
 
     timezone: str = "UTC"
 
@@ -47,10 +48,42 @@ class Settings(BaseSettings):
     hyperevm_rpc_url: str = "https://rpc.hyperliquid.xyz/evm"
     base_chain_id: int = 8453
     base_rpc_url: str = "https://mainnet.base.org"
+    cex_request_timeout_seconds: float = 3.0
+    cex_request_retries: int = 2
 
     # Asset addresses (placeholder; should be replaced in env)
     hyperevm_usdc: str = "0x0000000000000000000000000000000000000001"
     hyperevm_usdt0: str = "0x0000000000000000000000000000000000000002"
+    hyperevm_usdc_decimals: int = 6
+    hyperevm_usdt0_decimals: int = 6
+
+    # HyperEVM DEX real-quoter configuration (empty => unsupported-safe)
+    hyperevm_ramses_quoter: str = ""
+    hyperevm_hybra_quoter: str = ""
+    hyperevm_ramses_quoter_mode: str = "v2"
+    hyperevm_hybra_quoter_mode: str = "v2"
+    hyperevm_ramses_pool_usdc_usdt0: str = ""
+    hyperevm_hybra_pool_usdc_usdt0: str = ""
+    hyperevm_ramses_fee_bps: int = 5
+    hyperevm_hybra_fee_bps: int = 5
+
+    # Base DEX real-quoter configuration (empty => unsupported-safe)
+    base_usdc_address: str = "0x0000000000000000000000000000000000000003"
+    base_virtual_address: str = "0x0000000000000000000000000000000000000004"
+    base_usdc_decimals: int = 6
+    base_virtual_decimals: int = 18
+    base_uniswap_quoter: str = ""
+    base_uniswap_quoter_mode: str = "v2"
+    base_uniswap_v3_pool: str = ""
+    base_uniswap_v3_fee_bps: int = 100
+    base_pancake_quoter: str = ""
+    base_pancake_quoter_mode: str = "v2"
+    base_pancake_v3_pool: str = ""
+    base_pancake_v3_fee_bps: int = 100
+    base_aerodrome_quoter: str = ""
+    base_aerodrome_quoter_mode: str = "v2"
+    base_aerodrome_pool: str = ""
+    base_aerodrome_fee_bps: int = 100
 
     # Allowlists are comma-separated env values
     allowlisted_tokens: str = (
@@ -73,8 +106,11 @@ class Settings(BaseSettings):
     live_max_trades_per_route_per_10m: int = 3
     live_max_consecutive_failures_per_route: int = 1
     live_max_consecutive_losses_per_route: int = 2
+    route_failure_cooldown_seconds: int = 300
+    route_fatal_failure_cooldown_seconds: int = 900
     global_daily_dd_stop_pct: Decimal = Decimal("0.005")
     global_stale_quote_stop_seconds: int = 3
+    market_data_staleness_stop_seconds: int = 10
 
     # Depeg / abnormal defaults
     depeg_threshold_bps: int = 50

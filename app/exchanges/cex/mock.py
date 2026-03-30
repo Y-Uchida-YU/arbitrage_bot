@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from app.config.settings import Settings
 from app.exchanges.cex.base import CEXAdapter
+from app.exchanges.errors import SymbolNormalizeError
 
 
 class MockCEXAdapter(CEXAdapter):
@@ -12,7 +13,10 @@ class MockCEXAdapter(CEXAdapter):
         self.settings = settings
 
     def normalize_symbol(self, raw_symbol: str) -> str:
-        return raw_symbol.replace("/", "").replace("-", "").upper()
+        normalized = raw_symbol.replace("/", "").replace("-", "").upper().strip()
+        if not normalized.isalnum() or len(normalized) < 6:
+            raise SymbolNormalizeError("symbol_normalize_failed", f"invalid symbol: {raw_symbol}")
+        return normalized
 
     async def get_best_bid_ask(self, symbol: str) -> tuple[Decimal, Decimal]:
         _ = symbol

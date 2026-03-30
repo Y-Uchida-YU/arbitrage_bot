@@ -6,6 +6,8 @@ from decimal import Decimal
 
 class DEXAdapter(ABC):
     venue: str
+    supported: bool = True
+    support_reason: str = ""
 
     @abstractmethod
     async def quote_exact_input(self, token_in: str, token_out: str, amount_in: Decimal) -> Decimal:
@@ -33,4 +35,8 @@ class DEXAdapter(ABC):
 
     @abstractmethod
     async def is_pool_healthy(self, pool_id: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_last_quote_timestamp(self) -> float | None:
         raise NotImplementedError
