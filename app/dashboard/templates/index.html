@@ -13,6 +13,11 @@
       <div class="kpi"><div class="label">Cumulative PnL</div><div class="value mono {{ 'bad' if overview.cumulative_pnl < 0 else 'good' }}">{{ overview.cumulative_pnl }}</div></div>
       <div class="kpi"><div class="label">Trades</div><div class="value mono">{{ overview.trade_count }}</div></div>
       <div class="kpi"><div class="label">Latest Opportunities (5m)</div><div class="value mono">{{ overview.latest_opportunities_count }}</div></div>
+      <div class="kpi"><div class="label">Cooldown Routes</div><div class="value mono">{{ overview.cooldown_routes_count if overview.cooldown_routes_count is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Unhealthy Venues</div><div class="value mono">{{ overview.unhealthy_venues_count if overview.unhealthy_venues_count is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Quote Unavailable</div><div class="value mono">{{ overview.quote_unavailable_count if overview.quote_unavailable_count is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Degraded Health</div><div class="value">{{ 'yes' if overview.degraded_health is defined and overview.degraded_health else 'no' }}</div></div>
+      <div class="kpi"><div class="label">Live Arm</div><div class="value">{{ 'armed' if live_arm_state else 'disarmed' }}</div></div>
     </article>
 
     <article class="card wide">
@@ -35,6 +40,7 @@
         <input name="strategy" placeholder="strategy" />
         <input name="pair" placeholder="pair" />
         <input name="venue" placeholder="venue" />
+        <input name="route_id" placeholder="route id" />
         <input name="blocked_reason" placeholder="blocked reason" />
         <button class="btn" type="submit">Apply</button>
       </form>
@@ -68,6 +74,72 @@
         <tbody>
           {% for k,v in metric_snapshot.items() %}
             <tr><td>{{ k }}</td><td class="mono">{{ v }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card half">
+      <h3>Blocked Reason Summary</h3>
+      <table>
+        <thead><tr><th>Reason</th><th>Count</th></tr></thead>
+        <tbody>
+          {% for row in blocked_summary %}
+            <tr><td>{{ row.blocked_reason }}</td><td class="mono">{{ row.count }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card half">
+      <h3>Cooldown / Failure State</h3>
+      <table>
+        <thead><tr><th>Route</th><th>Cooldown(s)</th><th>Fail</th><th>Loss</th><th>Fatal</th><th>Category</th></tr></thead>
+        <tbody>
+          {% for row in cooldown_states %}
+            <tr>
+              <td class="mono">{{ row.route_id }}</td>
+              <td class="mono">{{ row.cooldown_remaining_seconds }}</td>
+              <td class="mono">{{ row.consecutive_failures }}</td>
+              <td class="mono">{{ row.consecutive_losses }}</td>
+              <td>{{ 'yes' if row.last_failure_fatal else 'no' }}</td>
+              <td>{{ row.last_failure_category }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card half">
+      <h3>Health (Global)</h3>
+      <table>
+        <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>gas now</td><td class="mono">{{ global_health.gas_now }}</td></tr>
+          <tr><td>gas p50</td><td class="mono">{{ global_health.gas_p50 }}</td></tr>
+          <tr><td>gas p90</td><td class="mono">{{ global_health.gas_p90 }}</td></tr>
+          <tr><td>rpc error rate</td><td class="mono">{{ global_health.rpc_error_rate_5m }}</td></tr>
+          <tr><td>liquidity change</td><td class="mono">{{ global_health.liquidity_change_pct }}</td></tr>
+          <tr><td>quote age</td><td class="mono">{{ global_health.quote_age_seconds }}</td></tr>
+          <tr><td>staleness</td><td class="mono">{{ global_health.market_data_staleness_seconds }}</td></tr>
+          <tr><td>unavailable venues</td><td>{{ global_health.quote_unavailable_venues|join(', ') }}</td></tr>
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card half">
+      <h3>Venue Quote Health</h3>
+      <table>
+        <thead><tr><th>Venue</th><th>Supported</th><th>Last Success (UTC)</th><th>Unavailable(5m)</th><th>Degraded Reason</th></tr></thead>
+        <tbody>
+          {% for row in venue_quote_health %}
+            <tr>
+              <td>{{ row.venue }}</td>
+              <td>{{ 'yes' if row.supported else 'no' }}</td>
+              <td class="mono">{{ row.last_success_ts.isoformat() if row.last_success_ts else '-' }}</td>
+              <td class="mono">{{ row.quote_unavailable_count_5m }}</td>
+              <td>{{ row.degraded_reason }}</td>
+            </tr>
           {% endfor %}
         </tbody>
       </table>

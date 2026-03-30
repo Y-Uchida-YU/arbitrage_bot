@@ -53,8 +53,11 @@ class OpportunityOut(BaseModel):
     expected_slippage_bps: Decimal
     gas_estimate_usdc: Decimal
     quote_age_seconds: Decimal
+    persisted_seconds: Decimal
+    pool_health_ok: bool
     status: str
     blocked_reason: str
+    payload_json: str
 
 
 class TradeOut(BaseModel):
@@ -68,6 +71,9 @@ class TradeOut(BaseModel):
     expected_pnl: Decimal
     status: str
     blocked_reason: str
+    failure_category: str
+    is_fatal_failure: bool
+    cooldown_triggered: bool
     notes: str
 
 
@@ -80,6 +86,9 @@ class ExecutionOut(BaseModel):
     tx_hash: str
     tx_status: str
     revert_reason: str
+    failure_category: str
+    is_fatal_failure: bool
+    cooldown_triggered: bool
     input_amount: Decimal
     output_amount: Decimal
     expected_pnl: Decimal
@@ -120,3 +129,27 @@ class MetricOut(BaseModel):
     value: Decimal
     status: str
     labels_json: str
+
+
+class RouteOut(BaseModel):
+    id: str
+    strategy: str
+    name: str
+    pair: str
+    direction: str
+    venue_a: str
+    venue_b: str
+    enabled: bool
+    kill_switch: bool
+    is_live_allowed: bool
+
+
+class CooldownOut(BaseModel):
+    route_id: str
+    cooldown_remaining_seconds: int
+    consecutive_failures: int
+    consecutive_losses: int
+    last_failure_category: str
+    last_failure_reason: str
+    last_failure_fatal: bool
+    route_paused: bool

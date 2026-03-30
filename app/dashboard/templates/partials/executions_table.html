@@ -13,6 +13,9 @@
       <th>Tx Hash</th>
       <th>Status</th>
       <th>Revert Reason</th>
+      <th>Failure Category</th>
+      <th>Fatal</th>
+      <th>Cooldown</th>
       <th>Gas Used</th>
       <th>Latency</th>
       <th>Notes</th>
@@ -32,6 +35,9 @@
       <td class="mono">{{ row.tx_hash }}</td>
       <td>{{ row.tx_status }}</td>
       <td>{{ row.revert_reason }}</td>
+      <td>{{ row.failure_category }}</td>
+      <td>{{ 'yes' if row.is_fatal_failure else 'no' }}</td>
+      <td>{{ 'yes' if row.cooldown_triggered else 'no' }}</td>
       <td class="mono">{{ row.gas_used }}</td>
       <td class="mono">{{ row.latency_ms }}</td>
       <td>{{ row.notes }}</td>

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
@@ -8,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
     BalanceOut,
+    CooldownOut,
     ControlRequest,
     CooldownControlRequest,
     DisableRouteRequest,
@@ -18,6 +21,7 @@ from app.api.schemas import (
     MetricOut,
     ModeSwitchRequest,
     OpportunityOut,
+    RouteOut,
     StrategyControlRequest,
     TradeOut,
     VenueControlRequest,
@@ -53,8 +57,10 @@ async def health() -> HealthResponse:
 
 @router.get("/status")
 async def status_endpoint(
+    request: Request,
     session: AsyncSession = Depends(get_async_session),
 ) -> dict[str, str | bool]:
+    state = get_state(request)
     repo = Repository(session)
     ctrl = await repo.get_runtime_control()
     return {
@@ -63,14 +69,34 @@ async def status_endpoint(
         "strategy_pause": ctrl.strategy_pause,
         "pair_pause": ctrl.pair_pause,
         "route_pause": ctrl.route_pause,
-        "live_guard_armed": ctrl.live_guard_armed,
+        "live_guard_armed": state.live_engine.runtime_armed,
     }
 
 
 @router.get("/overview")
-async def overview(session: AsyncSession = Depends(get_async_session)) -> dict:
+async def overview(
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+) -> dict:
+    state = get_state(request)
     repo = Repository(session)
-    return await repo.overview()
+    data = await repo.overview()
+    routes = await repo.list_routes()
+    cooldowns = [state.risk_manager.get_route_state(route.id) for route in routes]
+    snapshot = state.health_collector.build_snapshot("global")
+
+    data["cooldown_routes_count"] = sum(1 for x in cooldowns if int(x["cooldown_remaining_seconds"]) > 0)
+    data["unhealthy_venues_count"] = await repo.unhealthy_venues_count(since_minutes=60)
+    data["quote_unavailable_count"] = await repo.quote_unavailable_count(since_minutes=60)
+    data["degraded_health"] = (
+        snapshot.rpc_error_rate_5m > state.settings.rpc_error_rate_stop_pct_5m
+        or snapshot.market_data_staleness_seconds > Decimal(state.settings.market_data_staleness_stop_seconds)
+        or len(snapshot.quote_unavailable_venues) > 0
+    )
+    data["live_arm_state"] = state.live_engine.runtime_armed
+    data["quote_unavailable_venues"] = snapshot.quote_unavailable_venues
+    data["venue_quote_health"] = [asdict(item) for item in state.health_collector.venue_quote_health()]
+    return data
 
 
 @router.get("/opportunities", response_model=list[OpportunityOut])
@@ -140,6 +166,61 @@ async def metrics(
     repo = Repository(session)
     rows = await repo.list_health_metrics(limit=limit)
     return [MetricOut.model_validate(x, from_attributes=True) for x in rows]
+
+
+@router.get("/routes", response_model=list[RouteOut])
+async def routes(session: AsyncSession = Depends(get_async_session)) -> list[RouteOut]:
+    repo = Repository(session)
+    rows = await repo.list_routes()
+    return [RouteOut.model_validate(x, from_attributes=True) for x in rows]
+
+
+@router.get("/route-health")
+async def route_health(
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+) -> list[dict[str, object]]:
+    state = get_state(request)
+    repo = Repository(session)
+    routes = await repo.list_routes()
+    output: list[dict[str, object]] = []
+    for route in routes:
+        output.append(
+            {
+                "route_id": route.id,
+                "route_name": route.name,
+                "strategy": route.strategy,
+                "pair": route.pair,
+                "enabled": route.enabled,
+                "kill_switch": route.kill_switch,
+                "risk_state": state.risk_manager.get_route_state(route.id),
+                "health_snapshot": asdict(state.health_collector.build_snapshot(route.id)),
+            }
+        )
+    return output
+
+
+@router.get("/blocked-reason-summary")
+async def blocked_reason_summary(
+    minutes: int = Query(default=60, ge=1, le=1440),
+    session: AsyncSession = Depends(get_async_session),
+) -> list[dict[str, object]]:
+    repo = Repository(session)
+    return await repo.blocked_reason_summary(since_minutes=minutes)
+
+
+@router.get("/cooldowns", response_model=list[CooldownOut])
+async def cooldowns(
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+) -> list[CooldownOut]:
+    state = get_state(request)
+    repo = Repository(session)
+    routes = await repo.list_routes()
+    out: list[CooldownOut] = []
+    for route in routes:
+        out.append(CooldownOut.model_validate(state.risk_manager.get_route_state(route.id)))
+    return out
 
 
 @router.post("/control/pause")

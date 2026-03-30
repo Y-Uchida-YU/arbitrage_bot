@@ -13,8 +13,11 @@
       <th>Slippage bps</th>
       <th>Gas (USDC)</th>
       <th>Quote Age</th>
+      <th>Persisted(s)</th>
+      <th>Pool Health</th>
       <th>Status</th>
       <th>Blocked Reason</th>
+      <th>Checks</th>
     </tr>
   </thead>
   <tbody>
@@ -31,8 +34,11 @@
       <td class="mono">{{ row.expected_slippage_bps }}</td>
       <td class="mono">{{ row.gas_estimate_usdc }}</td>
       <td class="mono">{{ row.quote_age_seconds }}</td>
+      <td class="mono">{{ row.persisted_seconds }}</td>
+      <td>{{ 'ok' if row.pool_health_ok else 'bad' }}</td>
       <td>{{ row.status }}</td>
       <td class="warn">{{ row.blocked_reason }}</td>
+      <td class="mono">{{ row.payload_json }}</td>
     </tr>
   {% endfor %}
   </tbody>

@@ -198,6 +198,10 @@ class Repository:
         rows = await self.session.scalars(query.order_by(Route.created_at.asc()))
         return list(rows)
 
+    async def list_routes(self) -> list[Route]:
+        rows = await self.session.scalars(select(Route).order_by(Route.strategy.asc(), Route.name.asc()))
+        return list(rows)
+
     async def get_wallet_usdc_balance(self) -> Decimal:
         bal = await self.session.scalar(
             select(Balance).where(Balance.venue == "hyperevm_wallet", Balance.token == "USDC")
@@ -251,6 +255,9 @@ class Repository:
         expected_pnl: Decimal,
         status: str,
         blocked_reason: str = "",
+        failure_category: str = "",
+        is_fatal_failure: bool = False,
+        cooldown_triggered: bool = False,
         notes: str = "",
     ) -> TradeAttempt:
         attempt = TradeAttempt(
@@ -265,6 +272,9 @@ class Repository:
             expected_pnl=expected_pnl,
             status=status,
             blocked_reason=blocked_reason,
+            failure_category=failure_category,
+            is_fatal_failure=is_fatal_failure,
+            cooldown_triggered=cooldown_triggered,
             notes=notes,
         )
         self.session.add(attempt)
@@ -285,6 +295,9 @@ class Repository:
         expected_pnl: Decimal,
         realized_pnl: Decimal,
         revert_reason: str = "",
+        failure_category: str = "",
+        is_fatal_failure: bool = False,
+        cooldown_triggered: bool = False,
         gas_used: Decimal = Decimal("0"),
         latency_ms: int = 0,
         notes: str = "",
@@ -298,6 +311,9 @@ class Repository:
             tx_hash=tx_hash,
             tx_status=tx_status,
             revert_reason=revert_reason,
+            failure_category=failure_category,
+            is_fatal_failure=is_fatal_failure,
+            cooldown_triggered=cooldown_triggered,
             input_amount=input_amount,
             output_amount=output_amount,
             expected_pnl=expected_pnl,
@@ -310,6 +326,28 @@ class Repository:
         await self.session.commit()
         await self.session.refresh(execution)
         return execution
+
+    async def update_trade_attempt_outcome(
+        self,
+        attempt_id: str,
+        status: str,
+        blocked_reason: str = "",
+        failure_category: str = "",
+        is_fatal_failure: bool = False,
+        cooldown_triggered: bool = False,
+        notes: str = "",
+    ) -> None:
+        attempt = await self.session.scalar(select(TradeAttempt).where(TradeAttempt.id == attempt_id))
+        if attempt is None:
+            return
+        attempt.status = status
+        attempt.blocked_reason = blocked_reason
+        attempt.failure_category = failure_category
+        attempt.is_fatal_failure = is_fatal_failure
+        attempt.cooldown_triggered = cooldown_triggered
+        if notes:
+            attempt.notes = notes
+        await self.session.commit()
 
     async def list_opportunities(
         self,
@@ -356,6 +394,47 @@ class Repository:
         rows = await self.session.scalars(select(HealthMetric).order_by(HealthMetric.timestamp.desc()).limit(limit))
         return list(rows)
 
+    async def blocked_reason_summary(self, since_minutes: int = 60) -> list[dict[str, object]]:
+        since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
+        rows = await self.session.execute(
+            select(Opportunity.blocked_reason, func.count(Opportunity.id))
+            .where(Opportunity.created_at >= since, Opportunity.blocked_reason != "")
+            .group_by(Opportunity.blocked_reason)
+            .order_by(func.count(Opportunity.id).desc())
+        )
+        return [
+            {
+                "blocked_reason": reason,
+                "count": int(count),
+            }
+            for reason, count in rows.all()
+        ]
+
+    async def quote_unavailable_count(self, since_minutes: int = 60) -> int:
+        since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
+        value = await self.session.scalar(
+            select(func.count(Opportunity.id)).where(
+                Opportunity.created_at >= since,
+                Opportunity.blocked_reason == "quote_unavailable",
+            )
+        )
+        return int(value or 0)
+
+    async def unhealthy_venues_count(self, since_minutes: int = 60) -> int:
+        since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
+        rows = await self.session.execute(
+            select(Opportunity.venues)
+            .where(Opportunity.created_at >= since, Opportunity.blocked_reason.in_(["pool_unhealthy", "quote_unavailable"]))
+            .distinct()
+        )
+        venues: set[str] = set()
+        for (value,) in rows.all():
+            for venue in str(value).split("->"):
+                venue = venue.strip()
+                if venue:
+                    venues.add(venue)
+        return len(venues)
+
     async def write_health_metric(self, name: str, value: Decimal, status: str = "ok", labels_json: str = "{}") -> HealthMetric:
         metric = HealthMetric(run_id=new_run_id(), name=name, value=value, status=status, labels_json=labels_json)
         self.session.add(metric)
@@ -395,14 +474,16 @@ class Repository:
 
         trades_total = await self.session.scalar(select(func.count(TradeAttempt.id)))
         exec_total = await self.session.scalar(select(func.count(Execution.id)))
-        exec_success = await self.session.scalar(select(func.count(Execution.id)).where(Execution.tx_status == "success"))
-        exec_reverted = await self.session.scalar(select(func.count(Execution.id)).where(Execution.tx_status == "reverted"))
+        exec_success = await self.session.scalar(select(func.count(Execution.id)).where(Execution.tx_status.in_(["success", "dry_run"])))
+        exec_reverted = await self.session.scalar(select(func.count(Execution.id)).where(Execution.tx_status.in_(["reverted", "failed", "dry_run_blocked"])))
 
         latest_opps = await self.session.scalar(
             select(func.count(Opportunity.id)).where(Opportunity.created_at >= datetime.now(timezone.utc) - timedelta(minutes=5))
         )
 
         balances = await self.list_balances()
+        quote_unavailable = await self.quote_unavailable_count(since_minutes=60)
+        unhealthy_venues = await self.unhealthy_venues_count(since_minutes=60)
 
         success_rate = Decimal("0")
         failure_rate = Decimal("0")
@@ -438,5 +519,7 @@ class Repository:
                 for b in balances
             ],
             "latest_opportunities_count": int(latest_opps or 0),
+            "quote_unavailable_count": quote_unavailable,
+            "unhealthy_venues_count": unhealthy_venues,
             "active_kill_switches": ["global_pause"] if ctrl.global_pause else [],
         }

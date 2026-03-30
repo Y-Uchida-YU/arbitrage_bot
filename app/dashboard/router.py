@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Str
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.app_state import AppState
 from app.db.repository import Repository
 from app.db.session import get_async_session
 from app.utils.metrics import metrics_store
@@ -19,6 +20,7 @@ templates = Jinja2Templates(directory="app/dashboard/templates")
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard_index(request: Request, session: AsyncSession = Depends(get_async_session)) -> HTMLResponse:
+    state: AppState = request.app.state.services
     repo = Repository(session)
     overview = await repo.overview()
     opportunities = await repo.list_opportunities(limit=50)
@@ -26,6 +28,11 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
     executions = await repo.list_executions(limit=50)
     balances = await repo.list_balances()
     metrics = await repo.list_health_metrics(limit=100)
+    routes = await repo.list_routes()
+    blocked_summary = await repo.blocked_reason_summary(since_minutes=120)
+    cooldown_states = [state.risk_manager.get_route_state(route.id) for route in routes]
+    global_health = state.health_collector.build_snapshot("global")
+    venue_quote_health = state.health_collector.venue_quote_health()
 
     chart_points = [
         {"t": row.created_at.isoformat(), "v": float(row.realized_pnl)}
@@ -67,6 +74,11 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
         "latency_points": latency_points,
         "eligible_count": eligible_count,
         "blocked_count": blocked_count,
+        "blocked_summary": blocked_summary,
+        "cooldown_states": cooldown_states,
+        "global_health": global_health,
+        "venue_quote_health": venue_quote_health,
+        "live_arm_state": state.live_engine.runtime_armed,
         "metric_snapshot": metrics_store.snapshot(),
     }
     return templates.TemplateResponse("index.html", context)
@@ -78,6 +90,7 @@ async def opportunities_fragment(
     strategy: str | None = None,
     pair: str | None = None,
     venue: str | None = None,
+    route_id: str | None = None,
     blocked_reason: str | None = None,
     session: AsyncSession = Depends(get_async_session),
 ) -> HTMLResponse:
@@ -86,6 +99,7 @@ async def opportunities_fragment(
         strategy=strategy,
         pair=pair,
         venue=venue,
+        route_id=route_id,
         blocked_reason=blocked_reason,
         limit=100,
     )
