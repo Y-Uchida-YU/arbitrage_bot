@@ -11,6 +11,7 @@
 7. Execution engines (paper + live dry-run)
 8. Discord alert service
 9. Server-rendered dashboard (Jinja2 + HTMX + Chart.js)
+10. Replay/backtest engine (`app/backtest`)
 
 ## Data Flow
 
@@ -24,6 +25,7 @@
    - live mode: dry-run integration path (unless explicitly enabled)
 7. Health metrics and alerts are recorded continuously.
 8. Dashboard/API read same DB records.
+9. Backtest replays saved opportunities and stores reproducible results.
 
 ## Safety Gates
 
@@ -53,6 +55,13 @@ Core tables:
 - `kill_switch_events`
 - `config_audit_logs`
 - `runtime_controls`
+- `route_runtime_states`
+- `market_snapshots`
+- `route_health_snapshots`
+- `parameter_sets`
+- `backtest_runs`
+- `backtest_results`
+- `backtest_trades`
 
 All timestamps are stored in UTC. Monetary/ratio fields use decimal numeric columns.
 

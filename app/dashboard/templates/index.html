@@ -18,6 +18,10 @@
       <div class="kpi"><div class="label">Quote Unavailable</div><div class="value mono">{{ overview.quote_unavailable_count if overview.quote_unavailable_count is defined else 0 }}</div></div>
       <div class="kpi"><div class="label">Degraded Health</div><div class="value">{{ 'yes' if overview.degraded_health is defined and overview.degraded_health else 'no' }}</div></div>
       <div class="kpi"><div class="label">Live Arm</div><div class="value">{{ 'armed' if live_arm_state else 'disarmed' }}</div></div>
+      <div class="kpi"><div class="label">Observations (24h)</div><div class="value mono">{{ overview.observation_records_count if overview.observation_records_count is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Backtest Runs</div><div class="value mono">{{ overview.backtest_runs_count if overview.backtest_runs_count is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Persistent Cooldowns</div><div class="value mono">{{ overview.persistent_cooldown_routes_count if overview.persistent_cooldown_routes_count is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Fatal Paused Routes</div><div class="value mono">{{ overview.fatal_paused_routes_count if overview.fatal_paused_routes_count is defined else 0 }}</div></div>
     </article>
 
     <article class="card wide">
@@ -40,10 +44,31 @@
         <input name="strategy" placeholder="strategy" />
         <input name="pair" placeholder="pair" />
         <input name="venue" placeholder="venue" />
+        <input name="source_type" placeholder="real/mock" />
         <input name="route_id" placeholder="route id" />
         <input name="blocked_reason" placeholder="blocked reason" />
         <button class="btn" type="submit">Apply</button>
       </form>
+    </article>
+
+    <article class="card wide">
+      <h3>Latest Backtest Summary</h3>
+      {% if latest_backtest %}
+      <table>
+        <thead><tr><th>Sim PnL</th><th>Eligible</th><th>Blocked</th><th>Hit Rate</th><th>Max DD</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="mono">{{ latest_backtest.simulated_pnl }}</td>
+            <td class="mono">{{ latest_backtest.eligible_count }}</td>
+            <td class="mono">{{ latest_backtest.blocked_count }}</td>
+            <td class="mono">{{ latest_backtest.hit_rate }}</td>
+            <td class="mono">{{ latest_backtest.max_drawdown }}</td>
+          </tr>
+        </tbody>
+      </table>
+      {% else %}
+      <p>No backtest result yet.</p>
+      {% endif %}
     </article>
 
     <article class="card half">
@@ -146,6 +171,87 @@
     </article>
 
     <article class="card wide">
+      <h3>Route Runtime State (Persisted)</h3>
+      <table>
+        <thead><tr><th>Route</th><th>Paused</th><th>Cooldown Until</th><th>Fatal</th><th>Last Category</th><th>Fail</th><th>Loss</th></tr></thead>
+        <tbody>
+          {% for row in runtime_states %}
+            <tr>
+              <td class="mono">{{ row.route_id }}</td>
+              <td>{{ 'yes' if row.paused else 'no' }}</td>
+              <td class="mono">{{ row.cooldown_until.isoformat() if row.cooldown_until else '-' }}</td>
+              <td>{{ 'yes' if row.last_failure_fatal else 'no' }}</td>
+              <td>{{ row.last_failure_category }}</td>
+              <td class="mono">{{ row.consecutive_failures }}</td>
+              <td class="mono">{{ row.consecutive_losses }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card wide">
+      <h3>Route Health (Persisted Snapshot)</h3>
+      <table>
+        <thead><tr><th>Route</th><th>Support</th><th>Fee Known</th><th>Quote Match</th><th>Balance Match</th><th>Cooldown</th><th>Paused</th></tr></thead>
+        <tbody>
+          {% for row in route_health_rows %}
+            <tr>
+              <td class="mono">{{ row.route_id }}</td>
+              <td>{{ row.support_status }}</td>
+              <td>{{ row.fee_known_status }}</td>
+              <td>{{ row.quote_match_status }}</td>
+              <td>{{ row.balance_match_status }}</td>
+              <td>{{ 'yes' if row.cooldown_active else 'no' }}</td>
+              <td>{{ 'yes' if row.paused else 'no' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card wide">
+      <h3>Backtest Runs</h3>
+      <table>
+        <thead><tr><th>Time</th><th>Run ID</th><th>Strategy</th><th>Route</th><th>Parameter Set</th><th>Status</th><th>Window</th></tr></thead>
+        <tbody>
+          {% for row in backtest_runs %}
+            <tr>
+              <td class="mono">{{ row.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+              <td class="mono">{{ row.id }}</td>
+              <td>{{ row.strategy }}</td>
+              <td class="mono">{{ row.route_id }}</td>
+              <td class="mono">{{ row.parameter_set_id if row.parameter_set_id else '-' }}</td>
+              <td>{{ row.status }}</td>
+              <td class="mono">{{ row.start_ts.strftime('%m-%d %H:%M') }} - {{ row.end_ts.strftime('%m-%d %H:%M') }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card wide">
+      <h3>Backtest Results (Route / Parameter Comparison)</h3>
+      <table>
+        <thead><tr><th>Time</th><th>Run ID</th><th>Route</th><th>Parameter Set</th><th>Sim PnL</th><th>Eligible</th><th>Blocked</th><th>Hit Rate</th></tr></thead>
+        <tbody>
+          {% for row in backtest_result_rows %}
+            <tr>
+              <td class="mono">{{ row.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+              <td class="mono">{{ row.backtest_run_id }}</td>
+              <td class="mono">{{ row.route_id if row.route_id else '-' }}</td>
+              <td class="mono">{{ row.parameter_set_id if row.parameter_set_id else '-' }}</td>
+              <td class="mono">{{ row.simulated_pnl }}</td>
+              <td class="mono">{{ row.eligible_count }}</td>
+              <td class="mono">{{ row.blocked_count }}</td>
+              <td class="mono">{{ row.hit_rate }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card wide">
       <h3>Cumulative PnL Trend (Execution Series)</h3>
       <canvas id="pnlChart" height="90"></canvas>
     </article>
@@ -173,6 +279,21 @@
     <article class="card half">
       <h3>Gas Trend</h3>
       <canvas id="gasChart" height="110"></canvas>
+    </article>
+
+    <article class="card half">
+      <h3>Backtest Simulated PnL Trend</h3>
+      <canvas id="backtestChart" height="110"></canvas>
+    </article>
+
+    <article class="card half">
+      <h3>Backtest Blocked Reasons</h3>
+      <canvas id="backtestBlockedChart" height="110"></canvas>
+    </article>
+
+    <article class="card wide">
+      <h3>Backtest Signal Timeline</h3>
+      <canvas id="backtestTimelineChart" height="100"></canvas>
     </article>
 
     <article id="opportunities-pane" class="card wide" hx-get="/dashboard/opportunities" hx-include="#opp-filter" hx-trigger="load, every 5s" hx-swap="innerHTML">
@@ -278,6 +399,36 @@
         datasets: [{ label: "gas regime", data: gasPoints.map((p) => p.v), borderColor: "#2d5f5f", pointRadius: 0 }]
       },
       options: { scales: { x: { ticks: { maxTicksLimit: 6 } } } }
+    });
+
+    const backtestPoints = {{ backtest_pnl_points | tojson }};
+    new Chart(document.getElementById("backtestChart"), {
+      type: "line",
+      data: {
+        labels: backtestPoints.map((p) => p.t),
+        datasets: [{ label: "simulated pnl", data: backtestPoints.map((p) => p.v), borderColor: "#7a3e00", pointRadius: 0 }]
+      },
+      options: { scales: { x: { ticks: { maxTicksLimit: 6 } } } }
+    });
+
+    const blockedMap = {{ latest_backtest_blocked | tojson }};
+    new Chart(document.getElementById("backtestBlockedChart"), {
+      type: "bar",
+      data: {
+        labels: Object.keys(blockedMap),
+        datasets: [{ label: "blocked", data: Object.values(blockedMap), backgroundColor: "#8a1f1f" }]
+      },
+      options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { maxTicksLimit: 8 } } } }
+    });
+
+    const btTimeline = {{ latest_backtest_trade_points | tojson }};
+    new Chart(document.getElementById("backtestTimelineChart"), {
+      type: "line",
+      data: {
+        labels: btTimeline.map((p) => p.t),
+        datasets: [{ label: "sim pnl", data: btTimeline.map((p) => p.pnl), borderColor: "#4b2f00", pointRadius: 0 }]
+      },
+      options: { scales: { x: { ticks: { maxTicksLimit: 10 } } } }
     });
   </script>
 {% endblock %}

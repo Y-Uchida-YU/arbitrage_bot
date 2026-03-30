@@ -34,6 +34,8 @@ def _compile_contracts() -> dict:
                 "MockRouter.sol": {"content": router},
             },
             "settings": {
+                "optimizer": {"enabled": True, "runs": 200},
+                "viaIR": True,
                 "outputSelection": {
                     "*": {
                         "*": ["abi", "evm.bytecode"]
@@ -63,9 +65,18 @@ def _artifact(compiled: dict, file_name: str, contract_name: str) -> tuple[list[
 
 def _deploy(w3: Web3, abi: list[dict], bytecode: str, args: list) -> str:
     contract = w3.eth.contract(abi=abi, bytecode=bytecode)
-    tx = contract.constructor(*args).transact({"from": w3.eth.accounts[0]})
+    tx = contract.constructor(*args).transact({"from": w3.eth.accounts[0], "gas": 8_000_000})
     receipt = w3.eth.wait_for_transaction_receipt(tx)
     return receipt.contractAddress
+
+
+def _expect_revert(w3: Web3, fn_call, tx_params: dict) -> None:
+    try:
+        tx_hash = fn_call.transact(tx_params)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        assert receipt.status == 0
+    except TransactionFailed:
+        return
 
 
 def _build_default_setup(w3: Web3, compiled: dict) -> dict:
@@ -90,22 +101,22 @@ def _build_default_setup(w3: Web3, compiled: dict) -> dict:
     leg1_out = 1002 * 10**17
     final_out = 101 * 10**18
 
-    token_a.functions.mint(owner, 1000 * 10**18).transact({"from": owner})
-    token_b.functions.mint(router1_addr, 5000 * 10**18).transact({"from": owner})
-    token_a.functions.mint(router2_addr, 5000 * 10**18).transact({"from": owner})
+    token_a.functions.mint(owner, 1000 * 10**18).transact({"from": owner, "gas": 8_000_000})
+    token_b.functions.mint(router1_addr, 5000 * 10**18).transact({"from": owner, "gas": 8_000_000})
+    token_a.functions.mint(router2_addr, 5000 * 10**18).transact({"from": owner, "gas": 8_000_000})
 
     executor_addr = _deploy(w3, arb_abi, arb_bytecode, [[router1_addr, router2_addr], [token_a_addr, token_b_addr]])
     executor = w3.eth.contract(address=executor_addr, abi=arb_abi)
 
-    token_a.functions.approve(executor_addr, init_amount).transact({"from": owner})
+    token_a.functions.approve(executor_addr, init_amount).transact({"from": owner, "gas": 8_000_000})
 
     route_id = Web3.keccak(text="route1")
     corr_id = Web3.keccak(text="corr1")
     pool_a = Web3.keccak(text="pool-a")
     pool_b = Web3.keccak(text="pool-b")
 
-    data1 = router1.encodeABI(fn_name="swap", args=[token_a_addr, token_b_addr, init_amount, leg1_out])
-    data2 = router2.encodeABI(fn_name="swap", args=[token_b_addr, token_a_addr, leg1_out, final_out])
+    data1 = router1.encode_abi("swap", args=[token_a_addr, token_b_addr, init_amount, leg1_out])
+    data2 = router2.encode_abi("swap", args=[token_b_addr, token_a_addr, leg1_out, final_out])
 
     selector1 = bytes.fromhex(data1[2:10])
     selector2 = bytes.fromhex(data2[2:10])
@@ -119,7 +130,7 @@ def _build_default_setup(w3: Web3, compiled: dict) -> dict:
         [5, 5],
         [selector1, selector2],
         True,
-    ).transact({"from": owner})
+    ).transact({"from": owner, "gas": 8_000_000})
 
     steps = [
         (router1_addr, token_a_addr, token_b_addr, pool_a, 5, init_amount, leg1_out, bytes.fromhex(data1[2:])),
@@ -164,7 +175,7 @@ def test_happy_path_executes(w3: Web3, compiled: dict) -> None:
         5 * 10**17,
         deadline,
         s["steps"],
-    ).transact({"from": owner})
+    ).transact({"from": owner, "gas": 8_000_000})
     w3.eth.wait_for_transaction_receipt(tx)
 
     bal_after = token_a.functions.balanceOf(owner).call()
@@ -178,7 +189,8 @@ def test_min_profit_revert(w3: Web3, compiled: dict) -> None:
     executor = s["executor"]
     deadline = w3.eth.get_block("latest")["timestamp"] + 60
 
-    with pytest.raises(TransactionFailed):
+    _expect_revert(
+        w3,
         executor.functions.executeArb(
             s["route_id"],
             s["corr_id"],
@@ -188,7 +200,9 @@ def test_min_profit_revert(w3: Web3, compiled: dict) -> None:
             2 * 10**18,
             deadline,
             s["steps"],
-        ).transact({"from": owner})
+        ),
+        {"from": owner, "gas": 8_000_000},
+    )
 
 
 def test_unauthorized_revert(w3: Web3, compiled: dict) -> None:
@@ -197,7 +211,8 @@ def test_unauthorized_revert(w3: Web3, compiled: dict) -> None:
     executor = s["executor"]
     deadline = w3.eth.get_block("latest")["timestamp"] + 60
 
-    with pytest.raises(TransactionFailed):
+    _expect_revert(
+        w3,
         executor.functions.executeArb(
             s["route_id"],
             s["corr_id"],
@@ -207,7 +222,9 @@ def test_unauthorized_revert(w3: Web3, compiled: dict) -> None:
             0,
             deadline,
             s["steps"],
-        ).transact({"from": s["other"]})
+        ),
+        {"from": s["other"], "gas": 8_000_000},
+    )
 
 
 def test_route_validation_mismatch_revert(w3: Web3, compiled: dict) -> None:
@@ -229,7 +246,8 @@ def test_route_validation_mismatch_revert(w3: Web3, compiled: dict) -> None:
         bad_steps[1][7],
     )
 
-    with pytest.raises(TransactionFailed):
+    _expect_revert(
+        w3,
         executor.functions.executeArb(
             s["route_id"],
             s["corr_id"],
@@ -239,7 +257,9 @@ def test_route_validation_mismatch_revert(w3: Web3, compiled: dict) -> None:
             0,
             deadline,
             bad_steps,
-        ).transact({"from": owner})
+        ),
+        {"from": owner, "gas": 8_000_000},
+    )
 
 
 def test_selector_not_allowed_revert(w3: Web3, compiled: dict) -> None:
@@ -249,7 +269,7 @@ def test_selector_not_allowed_revert(w3: Web3, compiled: dict) -> None:
     executor = s["executor"]
     deadline = w3.eth.get_block("latest")["timestamp"] + 60
 
-    alt_data = s["router1"].encodeABI(fn_name="setShouldRevert", args=[False])
+    alt_data = s["router1"].encode_abi("setShouldRevert", args=[False])
     bad_steps = list(s["steps"])
     bad_steps[0] = (
         bad_steps[0][0],
@@ -262,7 +282,8 @@ def test_selector_not_allowed_revert(w3: Web3, compiled: dict) -> None:
         bytes.fromhex(alt_data[2:]),
     )
 
-    with pytest.raises(TransactionFailed):
+    _expect_revert(
+        w3,
         executor.functions.executeArb(
             s["route_id"],
             s["corr_id"],
@@ -272,7 +293,9 @@ def test_selector_not_allowed_revert(w3: Web3, compiled: dict) -> None:
             0,
             deadline,
             bad_steps,
-        ).transact({"from": owner})
+        ),
+        {"from": owner, "gas": 8_000_000},
+    )
 
 
 def test_pool_fee_mismatch_revert(w3: Web3, compiled: dict) -> None:
@@ -294,7 +317,8 @@ def test_pool_fee_mismatch_revert(w3: Web3, compiled: dict) -> None:
         bad_steps[0][7],
     )
 
-    with pytest.raises(TransactionFailed):
+    _expect_revert(
+        w3,
         executor.functions.executeArb(
             s["route_id"],
             s["corr_id"],
@@ -304,7 +328,9 @@ def test_pool_fee_mismatch_revert(w3: Web3, compiled: dict) -> None:
             0,
             deadline,
             bad_steps,
-        ).transact({"from": owner})
+        ),
+        {"from": owner, "gas": 8_000_000},
+    )
 
 
 def test_step_data_too_large_revert(w3: Web3, compiled: dict) -> None:
@@ -327,7 +353,8 @@ def test_step_data_too_large_revert(w3: Web3, compiled: dict) -> None:
         oversized,
     )
 
-    with pytest.raises(TransactionFailed):
+    _expect_revert(
+        w3,
         executor.functions.executeArb(
             s["route_id"],
             s["corr_id"],
@@ -337,7 +364,9 @@ def test_step_data_too_large_revert(w3: Web3, compiled: dict) -> None:
             0,
             deadline,
             bad_steps,
-        ).transact({"from": owner})
+        ),
+        {"from": owner, "gas": 8_000_000},
+    )
 
 
 def test_paused_revert(w3: Web3, compiled: dict) -> None:
@@ -347,9 +376,10 @@ def test_paused_revert(w3: Web3, compiled: dict) -> None:
     executor = s["executor"]
     deadline = w3.eth.get_block("latest")["timestamp"] + 60
 
-    executor.functions.pause().transact({"from": owner})
+    executor.functions.pause().transact({"from": owner, "gas": 8_000_000})
 
-    with pytest.raises(TransactionFailed):
+    _expect_revert(
+        w3,
         executor.functions.executeArb(
             s["route_id"],
             s["corr_id"],
@@ -359,7 +389,9 @@ def test_paused_revert(w3: Web3, compiled: dict) -> None:
             0,
             deadline,
             s["steps"],
-        ).transact({"from": owner})
+        ),
+        {"from": owner, "gas": 8_000_000},
+    )
 
 
 def test_emergency_withdraw(w3: Web3, compiled: dict) -> None:
@@ -368,10 +400,12 @@ def test_emergency_withdraw(w3: Web3, compiled: dict) -> None:
     token_a = s["token_a"]
     executor = s["executor"]
 
-    token_a.functions.transfer(executor.address, 10 * 10**18).transact({"from": owner})
+    token_a.functions.transfer(executor.address, 10 * 10**18).transact({"from": owner, "gas": 8_000_000})
     before = token_a.functions.balanceOf(owner).call()
 
-    executor.functions.emergencyWithdraw(token_a.address, 10 * 10**18, owner).transact({"from": owner})
+    executor.functions.emergencyWithdraw(token_a.address, 10 * 10**18, owner).transact(
+        {"from": owner, "gas": 8_000_000}
+    )
     after = token_a.functions.balanceOf(owner).call()
 
     assert after > before

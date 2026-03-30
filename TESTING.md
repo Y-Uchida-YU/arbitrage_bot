@@ -14,6 +14,11 @@
 - route adapter selection
 - health collector rolling metrics
 - blocked reason summary aggregation
+- fee unit separation (economic fee vs quoter/pool fee tier)
+- persistent route runtime state hydration
+- health unknown => blocked
+- market snapshot serialization
+- backtest result aggregation and parameter-set application
 
 ## Integration
 
@@ -25,6 +30,9 @@
 - `USE_MOCK_MARKET_DATA=false` startup behavior
 - unsupported DEX path => blocked/quote_unavailable behavior
 - schema guard behavior (`AUTO_CREATE_SCHEMA=false`)
+- observation recording endpoints (`market-snapshots`, `route-health-snapshots`)
+- backtest run/results endpoints and dashboard rendering
+- restart path restores persisted route runtime pause/cooldown state
 
 ## Contract
 

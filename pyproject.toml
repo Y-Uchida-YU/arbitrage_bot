@@ -35,7 +35,8 @@ dev = [
   "types-python-dateutil>=2.9.0.20240316",
   "types-requests>=2.32.0.20240712",
   "py-solc-x>=2.0.3",
-  "eth-tester>=0.11.0b2"
+  "eth-tester>=0.11.0b2",
+  "py-evm>=0.12.1b1"
 ]
 
 [build-system]

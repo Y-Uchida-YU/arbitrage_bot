@@ -139,7 +139,9 @@ _ERC20_DECIMALS_ABI: list[dict[str, Any]] = [
 @dataclass(slots=True)
 class PoolModel:
     pool_id: str
-    fee_bps: int
+    quoter_fee_tier: int
+    pool_fee_tier: int
+    configured_economic_fee_bps: int
     mid_price: Decimal
     liquidity_usd: Decimal
     healthy: bool = True
@@ -162,17 +164,31 @@ class MockV3Adapter(DEXAdapter):
         self.pools = pools
         self._last_quote_ts: float | None = None
 
-    async def quote_exact_input(self, token_in: str, token_out: str, amount_in: Decimal) -> Decimal:
-        pool = self._find_pool(token_in, token_out)
+    async def quote_exact_input(
+        self,
+        token_in: str,
+        token_out: str,
+        amount_in: Decimal,
+        fee_tier: int | None = None,
+        pool_id: str | None = None,
+    ) -> Decimal:
+        pool = self._find_pool(token_in, token_out, fee_tier=fee_tier, pool_id=pool_id)
         gross_out = amount_in * pool.mid_price
-        fee = gross_out * Decimal(pool.fee_bps) / Decimal(10000)
+        fee = gross_out * Decimal(pool.pool_fee_tier) / Decimal(10000)
         self._last_quote_ts = time.time()
         return (gross_out - fee).quantize(Decimal("0.00000001"))
 
-    async def quote_exact_output(self, token_in: str, token_out: str, amount_out: Decimal) -> Decimal:
-        pool = self._find_pool(token_in, token_out)
+    async def quote_exact_output(
+        self,
+        token_in: str,
+        token_out: str,
+        amount_out: Decimal,
+        fee_tier: int | None = None,
+        pool_id: str | None = None,
+    ) -> Decimal:
+        pool = self._find_pool(token_in, token_out, fee_tier=fee_tier, pool_id=pool_id)
         gross_in = amount_out / pool.mid_price
-        fee = gross_in * Decimal(pool.fee_bps) / Decimal(10000)
+        fee = gross_in * Decimal(pool.pool_fee_tier) / Decimal(10000)
         self._last_quote_ts = time.time()
         return (gross_in + fee).quantize(Decimal("0.00000001"))
 
@@ -186,7 +202,9 @@ class MockV3Adapter(DEXAdapter):
             return {"pool_id": pool_id, "healthy": False, "liquidity_usd": Decimal("0")}
         return {
             "pool_id": pool.pool_id,
-            "fee_bps": Decimal(pool.fee_bps),
+            "pool_fee_tier": Decimal(pool.pool_fee_tier),
+            "quoter_fee_tier": Decimal(pool.quoter_fee_tier),
+            "configured_economic_fee_bps": Decimal(pool.configured_economic_fee_bps),
             "mid_price": pool.mid_price,
             "liquidity_usd": pool.liquidity_usd,
             "healthy": pool.healthy,
@@ -196,7 +214,7 @@ class MockV3Adapter(DEXAdapter):
         pool = self.pools.get(pool_id)
         if pool is None:
             raise QuoteUnavailableError("quote_unavailable", f"unknown pool: {pool_id}")
-        return pool.fee_bps
+        return pool.pool_fee_tier
 
     async def get_liquidity_snapshot(self, pool_id: str) -> dict[str, Decimal]:
         pool = self.pools.get(pool_id)
@@ -211,11 +229,25 @@ class MockV3Adapter(DEXAdapter):
     async def get_last_quote_timestamp(self) -> float | None:
         return self._last_quote_ts
 
-    def _find_pool(self, token_in: str, token_out: str) -> PoolModel:
+    def _find_pool(
+        self,
+        token_in: str,
+        token_out: str,
+        fee_tier: int | None = None,
+        pool_id: str | None = None,
+    ) -> PoolModel:
+        if pool_id:
+            pool = self.pools.get(pool_id)
+            if pool is not None:
+                return pool
         normalized_in = token_in.upper().strip()
         normalized_out = token_out.upper().strip()
         for pool in self.pools.values():
-            if pool.token_in_symbol.upper() == normalized_in and pool.token_out_symbol.upper() == normalized_out:
+            if (
+                pool.token_in_symbol.upper() == normalized_in
+                and pool.token_out_symbol.upper() == normalized_out
+                and (fee_tier is None or pool.quoter_fee_tier == fee_tier or pool.pool_fee_tier == fee_tier)
+            ):
                 return pool
         first = next(iter(self.pools.values()), None)
         if first is None:
@@ -257,8 +289,15 @@ class RealV3LikeAdapter(DEXAdapter):
                 self.supported = False
                 self.support_reason = f"invalid quoter config: {exc}"
 
-    async def quote_exact_input(self, token_in: str, token_out: str, amount_in: Decimal) -> Decimal:
-        pool = self._find_pool(token_in, token_out)
+    async def quote_exact_input(
+        self,
+        token_in: str,
+        token_out: str,
+        amount_in: Decimal,
+        fee_tier: int | None = None,
+        pool_id: str | None = None,
+    ) -> Decimal:
+        pool = self._find_pool(token_in, token_out, fee_tier=fee_tier, pool_id=pool_id)
         if not self.supported or self.quoter is None or self.w3 is None:
             raise QuoteUnavailableError("quote_unavailable", self.support_reason or "quoter not supported")
 
@@ -273,8 +312,15 @@ class RealV3LikeAdapter(DEXAdapter):
         except Exception as exc:
             raise QuoteUnavailableError("quote_unavailable", f"{self.venue} quote failure: {exc}") from exc
 
-    async def quote_exact_output(self, token_in: str, token_out: str, amount_out: Decimal) -> Decimal:
-        pool = self._find_pool(token_in, token_out)
+    async def quote_exact_output(
+        self,
+        token_in: str,
+        token_out: str,
+        amount_out: Decimal,
+        fee_tier: int | None = None,
+        pool_id: str | None = None,
+    ) -> Decimal:
+        pool = self._find_pool(token_in, token_out, fee_tier=fee_tier, pool_id=pool_id)
         if not self.supported or self.quoter is None or self.w3 is None:
             raise QuoteUnavailableError("quote_unavailable", self.support_reason or "quoter not supported")
 
@@ -306,7 +352,7 @@ class RealV3LikeAdapter(DEXAdapter):
             return {
                 "pool_id": pool_id,
                 "sqrt_price_x96": Decimal(slot0[0]),
-                "fee_bps": Decimal(fee),
+                "pool_fee_tier": Decimal(fee),
                 "liquidity_raw": Decimal(liquidity_raw),
                 "liquidity_usd": liquidity_snapshot.get("liquidity_usd", Decimal("0")),
                 "healthy": liquidity_snapshot.get("liquidity_usd", Decimal("0")) > 0,
@@ -318,7 +364,7 @@ class RealV3LikeAdapter(DEXAdapter):
         pool = self.pools.get(pool_id)
         if pool is None:
             raise QuoteUnavailableError("quote_unavailable", f"unknown pool: {pool_id}")
-        return pool.fee_bps
+        return pool.pool_fee_tier
 
     async def get_liquidity_snapshot(self, pool_id: str) -> dict[str, Decimal]:
         pool = self.pools.get(pool_id)
@@ -358,7 +404,7 @@ class RealV3LikeAdapter(DEXAdapter):
                 Web3.to_checksum_address(pool.token_in_address),
                 Web3.to_checksum_address(pool.token_out_address),
                 amount_in_wei,
-                pool.fee_bps,
+                pool.quoter_fee_tier,
                 0,
             )
             result = await asyncio.to_thread(self.quoter.functions.quoteExactInputSingle(params).call)
@@ -367,7 +413,7 @@ class RealV3LikeAdapter(DEXAdapter):
             self.quoter.functions.quoteExactInputSingle(
                 Web3.to_checksum_address(pool.token_in_address),
                 Web3.to_checksum_address(pool.token_out_address),
-                pool.fee_bps,
+                pool.quoter_fee_tier,
                 amount_in_wei,
                 0,
             ).call
@@ -382,7 +428,7 @@ class RealV3LikeAdapter(DEXAdapter):
                 Web3.to_checksum_address(pool.token_in_address),
                 Web3.to_checksum_address(pool.token_out_address),
                 amount_out_wei,
-                pool.fee_bps,
+                pool.quoter_fee_tier,
                 0,
             )
             result = await asyncio.to_thread(self.quoter.functions.quoteExactOutputSingle(params).call)
@@ -391,7 +437,7 @@ class RealV3LikeAdapter(DEXAdapter):
             self.quoter.functions.quoteExactOutputSingle(
                 Web3.to_checksum_address(pool.token_in_address),
                 Web3.to_checksum_address(pool.token_out_address),
-                pool.fee_bps,
+                pool.quoter_fee_tier,
                 amount_out_wei,
                 0,
             ).call
@@ -414,11 +460,25 @@ class RealV3LikeAdapter(DEXAdapter):
         except Exception:
             return fallback
 
-    def _find_pool(self, token_in: str, token_out: str) -> PoolModel:
+    def _find_pool(
+        self,
+        token_in: str,
+        token_out: str,
+        fee_tier: int | None = None,
+        pool_id: str | None = None,
+    ) -> PoolModel:
+        if pool_id:
+            pool = self.pools.get(pool_id)
+            if pool is not None:
+                return pool
         normalized_in = token_in.upper().strip()
         normalized_out = token_out.upper().strip()
         for pool in self.pools.values():
-            if pool.token_in_symbol.upper() == normalized_in and pool.token_out_symbol.upper() == normalized_out:
+            if (
+                pool.token_in_symbol.upper() == normalized_in
+                and pool.token_out_symbol.upper() == normalized_out
+                and (fee_tier is None or pool.quoter_fee_tier == fee_tier or pool.pool_fee_tier == fee_tier)
+            ):
                 return pool
         raise QuoteUnavailableError(
             "quote_unavailable",

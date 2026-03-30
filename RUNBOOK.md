@@ -19,6 +19,8 @@ If startup fails with schema error:
 - Dashboard opportunities table shows block reasons
 - `GET /api/cooldowns` confirms per-route cooldown/failure state
 - `GET /api/blocked-reason-summary` confirms guard trend
+- `GET /api/market-snapshots` confirms observation persistence
+- `GET /api/route-health-snapshots` confirms route health persistence
 
 ## Manual Controls
 
@@ -45,6 +47,18 @@ All control endpoints require `CONTROL_API_TOKEN`.
 - `USE_MOCK_MARKET_DATA=false` enables real-data capable adapters.
 - If quoter/pool/token config is missing for a venue, it is treated as `quote_unavailable` and blocked.
 - This is expected fail-safe behavior, not a runtime crash.
+- Route runtime state (`route_runtime_states`) is persisted and re-hydrated on restart.
+
+## Replay / Backtest Operations
+
+- API:
+  - `POST /api/backtest/run`
+  - `GET /api/backtest/runs`
+  - `GET /api/backtest/results`
+  - `GET /api/backtest/results/{run_id}`
+- CLI:
+  - `python -m app.main backtest --strategy ... --route-id ... --pair ... --start-ts ... --end-ts ...`
+- Always treat backtest assumptions as conservative. Do not use optimistic fill assumptions for readiness decisions.
 
 ## Incident Response
 

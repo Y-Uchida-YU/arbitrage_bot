@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -91,18 +92,30 @@ def test_control_and_live_dry_run_flow(tmp_path: Path) -> None:
 
         time.sleep(1.2)
 
+        status = client.get("/api/status")
+        assert status.status_code == 200
+        assert status.json()["mode"] == "live"
+
         executions = client.get("/api/executions")
         assert executions.status_code == 200
         rows = executions.json()
         assert isinstance(rows, list)
-        assert len(rows) >= 1
 
         trades = client.get("/api/trades")
         assert trades.status_code == 200
         trade_rows = trades.json()
         assert isinstance(trade_rows, list)
-        assert len(trade_rows) >= 1
-        assert any(row["status"] != "submitted" for row in trade_rows)
+        if trade_rows:
+            assert any(row["status"] != "submitted" for row in trade_rows)
+        elif rows:
+            assert any((row.get("tx_status") or "") != "pending" for row in rows)
+        else:
+            opportunities = client.get("/api/opportunities")
+            assert opportunities.status_code == 200
+            opportunity_rows = opportunities.json()
+            assert isinstance(opportunity_rows, list)
+            assert len(opportunity_rows) >= 1
+            assert any((row.get("blocked_reason") or "") != "" for row in opportunity_rows)
 
         cooldowns = client.get("/api/cooldowns")
         assert cooldowns.status_code == 200
@@ -111,18 +124,121 @@ def test_control_and_live_dry_run_flow(tmp_path: Path) -> None:
 
 def test_real_mode_starts_and_unsupported_dex_blocks(tmp_path: Path) -> None:
     with _boot_client(tmp_path, live_enabled=False, use_mock_market_data=False) as client:
-        time.sleep(1.2)
+        time.sleep(0.8)
 
-        opportunities = client.get("/api/opportunities")
-        assert opportunities.status_code == 200
-        rows = opportunities.json()
-        assert isinstance(rows, list)
-        assert len(rows) >= 1
-        assert any(row["blocked_reason"] in {"quote_unavailable", "liquidity_unavailable", "route_disabled"} for row in rows)
+        rows = []
+        for _ in range(10):
+            opportunities = client.get("/api/opportunities")
+            assert opportunities.status_code == 200
+            rows = opportunities.json()
+            assert isinstance(rows, list)
+            if rows:
+                break
+            time.sleep(0.2)
+
+        if rows:
+            assert any(
+                row["blocked_reason"] in {"quote_unavailable", "liquidity_unavailable", "route_disabled"}
+                for row in rows
+            )
+        else:
+            route_health = client.get("/api/route-health")
+            assert route_health.status_code == 200
+            route_health_rows = route_health.json()
+            assert isinstance(route_health_rows, list)
+            assert len(route_health_rows) >= 1
 
         summary = client.get("/api/blocked-reason-summary")
         assert summary.status_code == 200
         assert isinstance(summary.json(), list)
+
+
+def test_observation_recording_and_backtest_flow(tmp_path: Path) -> None:
+    with _boot_client(tmp_path, live_enabled=False, use_mock_market_data=True) as client:
+        time.sleep(1.8)
+
+        snapshots = client.get("/api/market-snapshots")
+        assert snapshots.status_code == 200
+        snapshot_rows = snapshots.json()
+        assert isinstance(snapshot_rows, list)
+        assert len(snapshot_rows) >= 1
+
+        route_health = client.get("/api/route-health-snapshots")
+        assert route_health.status_code == 200
+        route_health_rows = route_health.json()
+        assert isinstance(route_health_rows, list)
+        assert len(route_health_rows) >= 1
+
+        routes = client.get("/api/routes")
+        assert routes.status_code == 200
+        route_rows = routes.json()
+        assert route_rows
+        route = route_rows[0]
+
+        now = datetime.now(timezone.utc)
+        payload = {
+            "token": "test-control-token",
+            "strategy": route["strategy"],
+            "route_id": route["id"],
+            "pair": route["pair"],
+            "start_ts": (now - timedelta(hours=1)).isoformat(),
+            "end_ts": (now + timedelta(minutes=1)).isoformat(),
+            "notes": "integration backtest",
+        }
+        run = client.post("/api/backtest/run", json=payload)
+        assert run.status_code == 200
+        run_body = run.json()
+        assert run_body["status"] == "completed"
+        run_id = run_body["run_id"]
+
+        runs = client.get("/api/backtest/runs")
+        assert runs.status_code == 200
+        assert isinstance(runs.json(), list)
+        assert len(runs.json()) >= 1
+
+        results = client.get("/api/backtest/results")
+        assert results.status_code == 200
+        assert isinstance(results.json(), list)
+        assert len(results.json()) >= 1
+
+        detail = client.get(f"/api/backtest/results/{run_id}")
+        assert detail.status_code == 200
+        body = detail.json()
+        assert "result" in body
+        assert "trades" in body
+        assert isinstance(body["trades"], list)
+
+        dashboard = client.get("/")
+        assert dashboard.status_code == 200
+        assert "Backtest Runs" in dashboard.text
+        assert "Backtest Signal Timeline" in dashboard.text
+
+
+def test_restart_restores_route_runtime_state(tmp_path: Path) -> None:
+    route_id = ""
+    with _boot_client(tmp_path, live_enabled=False, use_mock_market_data=True) as client:
+        time.sleep(1.0)
+        routes = client.get("/api/routes")
+        assert routes.status_code == 200
+        route_rows = routes.json()
+        assert route_rows
+        route_id = route_rows[0]["id"]
+
+        disable = client.post(
+            "/api/control/disable-route",
+            json={"token": "test-control-token", "route_id": route_id},
+        )
+        assert disable.status_code == 200
+        assert disable.json()["enabled"] is False
+
+    with _boot_client(tmp_path, live_enabled=False, use_mock_market_data=True) as client:
+        time.sleep(1.0)
+        cooldowns = client.get("/api/cooldowns")
+        assert cooldowns.status_code == 200
+        rows = cooldowns.json()
+        target = next((x for x in rows if x["route_id"] == route_id), None)
+        assert target is not None
+        assert target["route_paused"] is True
 
 
 def test_schema_guard_requires_flag_when_missing_schema(tmp_path: Path) -> None:

@@ -39,7 +39,6 @@ class Route(Base):
     __tablename__ = "routes"
     __table_args__ = (
         UniqueConstraint("strategy", "name", name="uq_route_strategy_name"),
-        Index("ix_routes_pair", "pair"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -53,8 +52,15 @@ class Route(Base):
     pool_b: Mapped[str] = mapped_column(String(128))
     router_a: Mapped[str] = mapped_column(String(128))
     router_b: Mapped[str] = mapped_column(String(128))
+    # Deprecated compatibility fields. Use separated fee semantics below.
     fee_tier_a_bps: Mapped[int] = mapped_column(Integer, default=5)
     fee_tier_b_bps: Mapped[int] = mapped_column(Integer, default=5)
+    quoter_fee_tier_a: Mapped[int] = mapped_column(Integer, default=5)
+    quoter_fee_tier_b: Mapped[int] = mapped_column(Integer, default=5)
+    pool_fee_tier_a: Mapped[int] = mapped_column(Integer, default=5)
+    pool_fee_tier_b: Mapped[int] = mapped_column(Integer, default=5)
+    economic_fee_bps_a: Mapped[int] = mapped_column(Integer, default=5)
+    economic_fee_bps_b: Mapped[int] = mapped_column(Integer, default=5)
     max_notional_usdc: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("100"))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_live_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -154,9 +160,6 @@ class TradeAttempt(Base):
 
 class Execution(Base):
     __tablename__ = "executions"
-    __table_args__ = (
-        Index("ix_executions_tx_hash", "tx_hash"),
-    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     attempt_id: Mapped[str] = mapped_column(String(36), ForeignKey("trade_attempts.id"), index=True)
@@ -266,6 +269,26 @@ class ConfigAuditLog(Base):
     notes: Mapped[str] = mapped_column(Text, default="")
 
 
+class RouteRuntimeState(Base):
+    __tablename__ = "route_runtime_states"
+    __table_args__ = (
+        UniqueConstraint("route_id", name="uq_route_runtime_state_route"),
+        Index("ix_route_runtime_state_updated_at", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    route_id: Mapped[str] = mapped_column(String(36), ForeignKey("routes.id"), index=True)
+    paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_failure_category: Mapped[str] = mapped_column(String(64), default="")
+    last_failure_reason: Mapped[str] = mapped_column(String(256), default="")
+    last_failure_fatal: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    consecutive_losses: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class RuntimeControl(Base):
     __tablename__ = "runtime_controls"
 
@@ -278,3 +301,132 @@ class RuntimeControl(Base):
     live_guard_armed: Mapped[bool] = mapped_column(Boolean, default=False)
     cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class MarketSnapshot(Base):
+    __tablename__ = "market_snapshots"
+    __table_args__ = (
+        Index("ix_market_snapshots_time", "timestamp"),
+        Index("ix_market_snapshots_route", "route_id", "timestamp"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    strategy: Mapped[str] = mapped_column(String(64), index=True)
+    route_id: Mapped[str] = mapped_column(String(36), ForeignKey("routes.id"), index=True)
+    pair: Mapped[str] = mapped_column(String(64), index=True)
+    venue: Mapped[str] = mapped_column(String(64), index=True)
+    context: Mapped[str] = mapped_column(String(64), default="")
+    bid: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    ask: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    amount_in: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    quoted_amount_out: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    liquidity_usd: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    gas_gwei: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    quote_age_seconds: Mapped[Decimal] = mapped_column(DECIMAL_10_5, default=Decimal("0"))
+    source_type: Mapped[str] = mapped_column(String(16), default="mock")
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class RouteHealthSnapshot(Base):
+    __tablename__ = "route_health_snapshots"
+    __table_args__ = (
+        Index("ix_route_health_snapshots_route_time", "route_id", "timestamp"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    strategy: Mapped[str] = mapped_column(String(64), index=True)
+    route_id: Mapped[str] = mapped_column(String(36), ForeignKey("routes.id"), index=True)
+    pair: Mapped[str] = mapped_column(String(64), index=True)
+    rpc_latency_ms: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    rpc_error_rate_5m: Mapped[Decimal] = mapped_column(DECIMAL_10_5, default=Decimal("0"))
+    db_latency_ms: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    quote_latency_ms: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    market_data_staleness_seconds: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    contract_revert_rate: Mapped[Decimal] = mapped_column(DECIMAL_10_5, default=Decimal("0"))
+    alert_send_success_rate: Mapped[Decimal] = mapped_column(DECIMAL_10_5, default=Decimal("0"))
+    fee_known_status: Mapped[str] = mapped_column(String(16), default="unknown")
+    quote_match_status: Mapped[str] = mapped_column(String(16), default="unknown")
+    balance_match_status: Mapped[str] = mapped_column(String(16), default="unknown")
+    support_status: Mapped[str] = mapped_column(String(16), default="unknown")
+    cooldown_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class ParameterSet(Base):
+    __tablename__ = "parameter_sets"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    strategy: Mapped[str] = mapped_column(String(64), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    params_json: Mapped[str] = mapped_column(Text, default="{}")
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class BacktestRun(Base):
+    __tablename__ = "backtest_runs"
+    __table_args__ = (
+        Index("ix_backtest_runs_created", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(String(64), index=True, default=new_id)
+    strategy: Mapped[str] = mapped_column(String(64), index=True)
+    route_id: Mapped[str] = mapped_column(String(36), ForeignKey("routes.id"), index=True)
+    pair: Mapped[str] = mapped_column(String(64), index=True)
+    parameter_set_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("parameter_sets.id"), nullable=True)
+    start_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    end_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="running")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BacktestResult(Base):
+    __tablename__ = "backtest_results"
+    __table_args__ = (
+        UniqueConstraint("backtest_run_id", name="uq_backtest_result_run"),
+        Index("ix_backtest_results_created", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    backtest_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("backtest_runs.id"), index=True)
+    signals: Mapped[int] = mapped_column(Integer, default=0)
+    eligible_count: Mapped[int] = mapped_column(Integer, default=0)
+    blocked_count: Mapped[int] = mapped_column(Integer, default=0)
+    simulated_pnl: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    hit_rate: Mapped[Decimal] = mapped_column(DECIMAL_10_5, default=Decimal("0"))
+    avg_modeled_edge_bps: Mapped[Decimal] = mapped_column(DECIMAL_10_5, default=Decimal("0"))
+    avg_realized_like_pnl: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    max_drawdown: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    worst_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    missed_opportunities: Mapped[int] = mapped_column(Integer, default=0)
+    blocked_reason_json: Mapped[str] = mapped_column(Text, default="{}")
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BacktestTrade(Base):
+    __tablename__ = "backtest_trades"
+    __table_args__ = (
+        Index("ix_backtest_trades_run_time", "backtest_run_id", "timestamp"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    backtest_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("backtest_runs.id"), index=True)
+    route_id: Mapped[str] = mapped_column(String(36), ForeignKey("routes.id"), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="blocked")
+    blocked_reason: Mapped[str] = mapped_column(String(128), default="")
+    modeled_edge_bps: Mapped[Decimal] = mapped_column(DECIMAL_10_5, default=Decimal("0"))
+    expected_pnl: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    simulated_pnl: Mapped[Decimal] = mapped_column(DECIMAL_18_8, default=Decimal("0"))
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")

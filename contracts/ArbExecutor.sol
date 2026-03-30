@@ -204,61 +204,15 @@ contract ArbExecutor {
 
         _safeTransferFrom(startToken, msg.sender, address(this), initialAmount);
 
-        address currentToken = startToken;
-        uint256 currentAmount = initialAmount;
+        (address leg1Token, uint256 leg1Amount) = _executeStep(routeId, steps[0], 0, startToken, initialAmount);
+        (address leg2Token, uint256 leg2Amount) = _executeStep(routeId, steps[1], 1, leg1Token, leg1Amount);
 
-        for (uint256 i = 0; i < steps.length; i++) {
-            SwapStep calldata step = steps[i];
-            if (step.data.length > _MAX_STEP_DATA_BYTES) {
-                revert StepDataTooLarge(routeId, i, step.data.length);
-            }
-
-            if (!allowlistedRouters[step.router]) {
-                emit ArbRevertedReason(routeId, "router_not_allowlisted");
-                revert NotAllowlistedRouter(step.router);
-            }
-            if (!allowlistedTokens[step.tokenIn] || !allowlistedTokens[step.tokenOut]) {
-                emit ArbRevertedReason(routeId, "token_not_allowlisted");
-                revert NotAllowlistedToken(!allowlistedTokens[step.tokenIn] ? step.tokenIn : step.tokenOut);
-            }
-            if (step.tokenIn != currentToken) {
-                emit ArbRevertedReason(routeId, "token_path_mismatch");
-                revert InvalidPath();
-            }
-
-            uint256 amountIn = step.amountIn == 0 ? currentAmount : step.amountIn;
-            if (amountIn > currentAmount) {
-                emit ArbRevertedReason(routeId, "amount_in_exceeds_balance");
-                revert InvalidPath();
-            }
-
-            uint256 beforeOut = IERC20(step.tokenOut).balanceOf(address(this));
-
-            _safeApprove(step.tokenIn, step.router, amountIn);
-            (bool ok, bytes memory retData) = step.router.call(step.data);
-            if (!ok) {
-                emit ArbRevertedReason(routeId, "router_call_failed");
-                revert RouterCallFailed(retData);
-            }
-
-            uint256 afterOut = IERC20(step.tokenOut).balanceOf(address(this));
-            uint256 outDelta = afterOut - beforeOut;
-
-            if (outDelta < step.minAmountOut) {
-                emit ArbRevertedReason(routeId, "leg_min_out_not_met");
-                revert InsufficientOutput(outDelta, step.minAmountOut);
-            }
-
-            currentToken = step.tokenOut;
-            currentAmount = outDelta;
-        }
-
-        if (currentToken != startToken) {
+        if (leg2Token != startToken) {
             emit ArbRevertedReason(routeId, "final_token_mismatch");
             revert FinalTokenMismatch();
         }
 
-        finalAmount = currentAmount;
+        finalAmount = leg2Amount;
         profit = finalAmount > initialAmount ? finalAmount - initialAmount : 0;
 
         if (finalAmount < minAmountOutFinal || profit < minProfitAbsolute) {
@@ -269,6 +223,56 @@ contract ArbExecutor {
         _safeTransfer(startToken, msg.sender, finalAmount);
 
         emit ArbExecuted(routeId, startToken, initialAmount, finalAmount, profit, gasStart - gasleft(), correlationId);
+    }
+
+    function _executeStep(
+        bytes32 routeId,
+        SwapStep calldata step,
+        uint256 stepIndex,
+        address expectedTokenIn,
+        uint256 currentAmount
+    ) internal returns (address nextToken, uint256 nextAmount) {
+        if (step.data.length > _MAX_STEP_DATA_BYTES) {
+            revert StepDataTooLarge(routeId, stepIndex, step.data.length);
+        }
+
+        if (!allowlistedRouters[step.router]) {
+            emit ArbRevertedReason(routeId, "router_not_allowlisted");
+            revert NotAllowlistedRouter(step.router);
+        }
+        if (!allowlistedTokens[step.tokenIn] || !allowlistedTokens[step.tokenOut]) {
+            emit ArbRevertedReason(routeId, "token_not_allowlisted");
+            revert NotAllowlistedToken(!allowlistedTokens[step.tokenIn] ? step.tokenIn : step.tokenOut);
+        }
+        if (step.tokenIn != expectedTokenIn) {
+            emit ArbRevertedReason(routeId, "token_path_mismatch");
+            revert InvalidPath();
+        }
+
+        uint256 amountIn = step.amountIn == 0 ? currentAmount : step.amountIn;
+        if (amountIn > currentAmount) {
+            emit ArbRevertedReason(routeId, "amount_in_exceeds_balance");
+            revert InvalidPath();
+        }
+
+        uint256 beforeOut = IERC20(step.tokenOut).balanceOf(address(this));
+
+        _safeApprove(step.tokenIn, step.router, amountIn);
+        (bool ok, bytes memory retData) = step.router.call(step.data);
+        if (!ok) {
+            emit ArbRevertedReason(routeId, "router_call_failed");
+            revert RouterCallFailed(retData);
+        }
+
+        uint256 afterOut = IERC20(step.tokenOut).balanceOf(address(this));
+        uint256 outDelta = afterOut - beforeOut;
+
+        if (outDelta < step.minAmountOut) {
+            emit ArbRevertedReason(routeId, "leg_min_out_not_met");
+            revert InsufficientOutput(outDelta, step.minAmountOut);
+        }
+
+        return (step.tokenOut, outDelta);
     }
 
     function _validateStep(bytes32 routeId, RouteConfig memory cfg, SwapStep calldata step, uint256 index) internal pure {

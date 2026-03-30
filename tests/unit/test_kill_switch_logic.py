@@ -26,6 +26,31 @@ def _quote() -> RouteQuote:
     )
 
 
+def _healthy_snapshot() -> HealthSnapshot:
+    return HealthSnapshot(
+        rpc_error_rate_5m=Decimal("0"),
+        gas_now=Decimal("10"),
+        gas_p90=Decimal("20"),
+        liquidity_change_pct=Decimal("0"),
+        quote_stale_seconds=Decimal("0"),
+        health_age_seconds=Decimal("0"),
+        alert_failures=0,
+        db_reachable=True,
+        db_known=True,
+        rpc_reachable=True,
+        rpc_known=True,
+        signing_ok=True,
+        signing_known=True,
+        fee_known=True,
+        quote_match=True,
+        quote_match_known=True,
+        balance_match=True,
+        balance_match_known=True,
+        clock_skew_ok=True,
+        contract_revert_rate=Decimal("0"),
+    )
+
+
 def test_kill_switch_blocks() -> None:
     settings = Settings(live_enable_flag=True)
     risk = GlobalRiskManager(settings)
@@ -35,7 +60,7 @@ def test_kill_switch_blocks() -> None:
         quote=_quote(),
         mode=settings.mode,
         quote_freshness_limit=3,
-        health=HealthSnapshot(),
+        health=_healthy_snapshot(),
         wallet_balance_usdc=Decimal("1000"),
         reference_deviation_bps=Decimal("1"),
         depeg_detected=False,
@@ -55,7 +80,7 @@ def test_route_pause_blocks() -> None:
         quote=_quote(),
         mode=settings.mode,
         quote_freshness_limit=3,
-        health=HealthSnapshot(),
+        health=_healthy_snapshot(),
         wallet_balance_usdc=Decimal("1000"),
         reference_deviation_bps=Decimal("1"),
         depeg_detected=False,

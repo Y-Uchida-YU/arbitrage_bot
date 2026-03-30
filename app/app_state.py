@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.alerts.service import AlertService
+from app.backtest.engine import BacktestEngine
 from app.config.settings import Settings
 from app.contracts.client import ArbExecutorClient
 from app.exchanges.factory import build_cex_adapters, build_hyperevm_dex_adapters, build_shadow_dex_adapters
@@ -26,6 +27,7 @@ class AppState:
     paper_engine: PaperExecutionEngine
     live_engine: LiveDryRunExecutionEngine
     health_collector: HealthCollector
+    backtest_engine: BacktestEngine
     runner: BotRunner
 
 
@@ -33,6 +35,7 @@ def build_app_state(settings: Settings, session_factory: async_sessionmaker) -> 
     alert_service = AlertService(settings.discord_webhook_url)
     risk_manager = GlobalRiskManager(settings)
     health_collector = HealthCollector()
+    backtest_engine = BacktestEngine(settings)
 
     edge = ModeledEdgeCalculator(settings)
     hyper_dex = build_hyperevm_dex_adapters(settings)
@@ -65,5 +68,6 @@ def build_app_state(settings: Settings, session_factory: async_sessionmaker) -> 
         paper_engine=paper_engine,
         live_engine=live_engine,
         health_collector=health_collector,
+        backtest_engine=backtest_engine,
         runner=runner,
     )

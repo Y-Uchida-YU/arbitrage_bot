@@ -25,7 +25,9 @@ def _build_hyperevm_mock_adapters(settings: Settings) -> dict[str, DEXAdapter]:
 
     ramses_forward = PoolModel(
         pool_id="ramses_v3_usdc_usdt0_5",
-        fee_bps=5,
+        quoter_fee_tier=5,
+        pool_fee_tier=5,
+        configured_economic_fee_bps=5,
         mid_price=mid * Decimal("1.006"),
         liquidity_usd=Decimal("500000"),
         token_in_symbol="USDC",
@@ -33,7 +35,9 @@ def _build_hyperevm_mock_adapters(settings: Settings) -> dict[str, DEXAdapter]:
     )
     ramses_reverse = PoolModel(
         pool_id="ramses_v3_usdt0_usdc_5",
-        fee_bps=5,
+        quoter_fee_tier=5,
+        pool_fee_tier=5,
+        configured_economic_fee_bps=5,
         mid_price=(Decimal("1") / mid) * Decimal("0.994"),
         liquidity_usd=Decimal("500000"),
         token_in_symbol="USDT0",
@@ -41,7 +45,9 @@ def _build_hyperevm_mock_adapters(settings: Settings) -> dict[str, DEXAdapter]:
     )
     hybra_forward = PoolModel(
         pool_id="hybra_v3_usdc_usdt0_5",
-        fee_bps=5,
+        quoter_fee_tier=5,
+        pool_fee_tier=5,
+        configured_economic_fee_bps=5,
         mid_price=mid * Decimal("0.994"),
         liquidity_usd=Decimal("450000"),
         token_in_symbol="USDC",
@@ -49,7 +55,9 @@ def _build_hyperevm_mock_adapters(settings: Settings) -> dict[str, DEXAdapter]:
     )
     hybra_reverse = PoolModel(
         pool_id="hybra_v3_usdt0_usdc_5",
-        fee_bps=5,
+        quoter_fee_tier=5,
+        pool_fee_tier=5,
+        configured_economic_fee_bps=5,
         mid_price=(Decimal("1") / mid) * Decimal("1.006"),
         liquidity_usd=Decimal("450000"),
         token_in_symbol="USDT0",
@@ -63,7 +71,9 @@ def _build_hyperevm_mock_adapters(settings: Settings) -> dict[str, DEXAdapter]:
         {
             "hybra_v4_observer_usdc_usdt0": PoolModel(
                 pool_id="hybra_v4_observer_usdc_usdt0",
-                fee_bps=5,
+                quoter_fee_tier=5,
+                pool_fee_tier=5,
+                configured_economic_fee_bps=5,
                 mid_price=mid,
                 liquidity_usd=Decimal("250000"),
                 token_in_symbol="USDC",
@@ -82,7 +92,9 @@ def _build_hyperevm_mock_adapters(settings: Settings) -> dict[str, DEXAdapter]:
 def _build_hyperevm_real_adapters(settings: Settings) -> dict[str, DEXAdapter]:
     ramses_pool_forward = PoolModel(
         pool_id="ramses_v3_usdc_usdt0_5",
-        fee_bps=settings.hyperevm_ramses_fee_bps,
+        quoter_fee_tier=settings.hyperevm_ramses_quoter_fee_tier,
+        pool_fee_tier=settings.hyperevm_ramses_pool_fee_tier,
+        configured_economic_fee_bps=settings.hyperevm_ramses_economic_fee_bps,
         mid_price=Decimal("0"),
         liquidity_usd=Decimal("0"),
         pool_address=settings.hyperevm_ramses_pool_usdc_usdt0,
@@ -95,7 +107,9 @@ def _build_hyperevm_real_adapters(settings: Settings) -> dict[str, DEXAdapter]:
     )
     ramses_pool_reverse = PoolModel(
         pool_id="ramses_v3_usdt0_usdc_5",
-        fee_bps=settings.hyperevm_ramses_fee_bps,
+        quoter_fee_tier=settings.hyperevm_ramses_quoter_fee_tier,
+        pool_fee_tier=settings.hyperevm_ramses_pool_fee_tier,
+        configured_economic_fee_bps=settings.hyperevm_ramses_economic_fee_bps,
         mid_price=Decimal("0"),
         liquidity_usd=Decimal("0"),
         pool_address=settings.hyperevm_ramses_pool_usdc_usdt0,
@@ -108,7 +122,9 @@ def _build_hyperevm_real_adapters(settings: Settings) -> dict[str, DEXAdapter]:
     )
     hybra_pool_forward = PoolModel(
         pool_id="hybra_v3_usdc_usdt0_5",
-        fee_bps=settings.hyperevm_hybra_fee_bps,
+        quoter_fee_tier=settings.hyperevm_hybra_quoter_fee_tier,
+        pool_fee_tier=settings.hyperevm_hybra_pool_fee_tier,
+        configured_economic_fee_bps=settings.hyperevm_hybra_economic_fee_bps,
         mid_price=Decimal("0"),
         liquidity_usd=Decimal("0"),
         pool_address=settings.hyperevm_hybra_pool_usdc_usdt0,
@@ -121,7 +137,9 @@ def _build_hyperevm_real_adapters(settings: Settings) -> dict[str, DEXAdapter]:
     )
     hybra_pool_reverse = PoolModel(
         pool_id="hybra_v3_usdt0_usdc_5",
-        fee_bps=settings.hyperevm_hybra_fee_bps,
+        quoter_fee_tier=settings.hyperevm_hybra_quoter_fee_tier,
+        pool_fee_tier=settings.hyperevm_hybra_pool_fee_tier,
+        configured_economic_fee_bps=settings.hyperevm_hybra_economic_fee_bps,
         mid_price=Decimal("0"),
         liquidity_usd=Decimal("0"),
         pool_address=settings.hyperevm_hybra_pool_usdc_usdt0,
