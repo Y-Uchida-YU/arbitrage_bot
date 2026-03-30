@@ -34,11 +34,18 @@ class MockCEXAdapter(CEXAdapter):
         return rows
 
     async def get_trading_fee(self, symbol: str, side: str, maker_or_taker: str) -> int:
+        fee, _provenance = await self.get_trading_fee_details(symbol, side, maker_or_taker)
+        return fee
+
+    async def get_trading_fee_details(self, symbol: str, side: str, maker_or_taker: str) -> tuple[int, str]:
         _ = symbol
         _ = side
+        maker = maker_or_taker == "maker"
         if self.venue == "bybit":
-            return self.settings.bybit_maker_fee_bps_fallback if maker_or_taker == "maker" else self.settings.bybit_taker_fee_bps_fallback
-        return self.settings.mexc_maker_fee_bps_fallback if maker_or_taker == "maker" else self.settings.mexc_taker_fee_bps_fallback
+            fee = self.settings.bybit_maker_fee_bps_fallback if maker else self.settings.bybit_taker_fee_bps_fallback
+            return fee, "fallback_only"
+        fee = self.settings.mexc_maker_fee_bps_fallback if maker else self.settings.mexc_taker_fee_bps_fallback
+        return fee, "fallback_only"
 
     async def get_market_status(self, symbol: str) -> str:
         _ = symbol

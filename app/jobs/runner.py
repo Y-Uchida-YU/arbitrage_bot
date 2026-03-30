@@ -22,6 +22,11 @@ from app.models.core import Route
 from app.quote_engine.engine import HyperDexDexQuoteEngine, ShadowCexDexQuoteEngine
 from app.quote_engine.types import RouteQuote
 from app.risk.manager import FATAL_FAILURE_CATEGORIES, GlobalRiskManager, HealthSnapshot
+from app.utils.confidence import (
+    normalize_balance_confidence,
+    normalize_fee_confidence,
+    normalize_quote_match_status,
+)
 from app.utils.logging import enrich_log_kwargs
 from app.utils.metrics import metrics_store
 
@@ -176,15 +181,31 @@ class BotRunner:
                                 quote_unavailable=True,
                             )
 
-                        fee_known = self._parse_tristate_bool(quote.metadata.get("fee_known"))
-                        quote_match = self._parse_tristate_bool(quote.metadata.get("quote_match"))
-                        balance_match = await self._probe_balance_match(repo)
-                        signing_ok = self._probe_signing_ok(route)
+                        fee_status = normalize_fee_confidence(
+                            quote.metadata.get("fee_known_status") or quote.metadata.get("fee_known")
+                        )
+                        fee_provenance = (
+                            quote.metadata.get("fee_provenance")
+                            or quote.metadata.get("fee_source")
+                            or ""
+                        )
+                        quote_match_status = normalize_quote_match_status(
+                            quote.metadata.get("quote_match_status") or quote.metadata.get("quote_match")
+                        )
+                        balance_status, balance_reason = await self._probe_balance_status(repo, route)
+                        signing_status = self._probe_signing_status(route)
+                        quote.metadata["fee_known_status"] = fee_status
+                        quote.metadata["fee_provenance"] = fee_provenance
+                        quote.metadata["quote_match_status"] = quote_match_status
+                        quote.metadata["balance_match_status"] = balance_status
+                        quote.metadata["balance_failure_reason"] = balance_reason
                         self.health_collector.set_quality_status(
-                            signing_ok=signing_ok,
-                            fee_known=fee_known,
-                            quote_match=quote_match,
-                            balance_match=balance_match,
+                            signing_status=signing_status,
+                            fee_known_status=fee_status,
+                            fee_provenance=fee_provenance,
+                            quote_match_status=quote_match_status,
+                            balance_match_status=balance_status,
+                            balance_failure_reason=balance_reason,
                         )
 
                         health = self.health_collector.to_risk_snapshot(route.id)
@@ -202,6 +223,17 @@ class BotRunner:
                         )
                         quote.metadata["risk_checks"] = ",".join(
                             [f"{k}:{'1' if v else '0'}" for k, v in sorted(decision.checks.items())]
+                        )
+                        route_state = self.risk_manager.get_route_state(route.id)
+                        quote.metadata["route_paused"] = str(route_state.get("route_paused", False)).lower()
+                        quote.metadata["cooldown_active"] = str(
+                            int(route_state.get("cooldown_remaining_seconds", 0)) > 0
+                        ).lower()
+                        quote.metadata["health_age_seconds"] = str(health.health_age_seconds)
+                        quote.metadata["support_status"] = (
+                            "unsupported"
+                            if quote.metadata.get("quote_unavailable", "false").lower() == "true"
+                            else "supported"
                         )
 
                         status = "eligible" if decision.tradable else "blocked"
@@ -456,19 +488,66 @@ class BotRunner:
         await session.execute(text("SELECT 1"))
         return Decimal(str((time.perf_counter() - start) * 1000))
 
-    async def _probe_balance_match(self, repo: Repository) -> bool | None:
+    async def _probe_balance_status(self, repo: Repository, route: Route) -> tuple[str, str]:
         try:
             balances = await repo.list_balances()
-            if not balances:
-                return None
-            for bal in balances:
-                if bal.available < 0 or bal.reserved < 0 or bal.total < 0:
-                    return False
-                if bal.available + bal.reserved > bal.total:
-                    return False
-            return True
         except Exception:
-            return None
+            return "unknown", "balance_probe_failed"
+        if not balances:
+            return "unknown", "balance_records_missing"
+
+        for bal in balances:
+            if bal.available < 0 or bal.reserved < 0 or bal.total < 0:
+                return "mismatch", "internal_constraint_violation"
+            if bal.available + bal.reserved > bal.total:
+                return "mismatch", "internal_constraint_violation"
+
+        status = "internal_ok"
+        failure_reason = ""
+
+        try:
+            inventory_rows = await repo.list_inventory(limit=500)
+        except Exception:
+            inventory_rows = []
+        if inventory_rows:
+            latest_inventory_totals: dict[tuple[str, str], Decimal] = {}
+            for row in inventory_rows:
+                key = (row.venue, row.token)
+                if key not in latest_inventory_totals:
+                    latest_inventory_totals[key] = Decimal(row.total)
+            compared = False
+            for bal in balances:
+                key = (bal.venue, bal.token)
+                if key not in latest_inventory_totals:
+                    continue
+                compared = True
+                if not self._within_balance_tolerance(
+                    Decimal(bal.total),
+                    latest_inventory_totals[key],
+                ):
+                    return "mismatch", "inventory_drift"
+            if compared:
+                status = "db_inventory_ok"
+
+        if route.strategy == "hyperevm_dex_dex" and self.settings.hyperevm_wallet_address.strip():
+            wallet_balance = await self._probe_wallet_usdc_balance()
+            if wallet_balance is None:
+                return "unknown", "wallet_balance_unavailable"
+            db_wallet = next(
+                (
+                    Decimal(bal.total)
+                    for bal in balances
+                    if bal.venue == "hyperevm_wallet" and bal.token.upper() == "USDC"
+                ),
+                None,
+            )
+            if db_wallet is None:
+                return "unknown", "wallet_balance_unavailable"
+            if not self._within_balance_tolerance(db_wallet, wallet_balance):
+                return "mismatch", "wallet_balance_mismatch"
+            status = "wallet_verified"
+
+        return normalize_balance_confidence(status), failure_reason
 
     async def _persist_route_runtime_state(self, repo: Repository, route_id: str) -> None:
         state = self.risk_manager.get_route_state(route_id)
@@ -547,26 +626,17 @@ class BotRunner:
         quote: RouteQuote,
     ) -> None:
         route_state = self.risk_manager.get_route_state(route.id)
-        fee_known_raw = quote.metadata.get("fee_known", "unknown").lower()
-        if fee_known_raw == "true":
-            fee_status = "good"
-        elif fee_known_raw == "false":
-            fee_status = "bad"
-        else:
-            fee_status = "unknown"
-        quote_match_raw = quote.metadata.get("quote_match")
-        if quote_match_raw == "true":
-            quote_match_status = "good"
-        elif quote_match_raw == "false":
-            quote_match_status = "bad"
-        else:
-            quote_match_status = "unknown"
-        if health.balance_match_known:
-            balance_match_status = "good" if health.balance_match else "bad"
-        else:
-            balance_match_status = "unknown"
+        fee_status = normalize_fee_confidence(
+            quote.metadata.get("fee_known_status") or health.fee_known_status
+        )
+        quote_match_status = normalize_quote_match_status(
+            quote.metadata.get("quote_match_status") or health.quote_match_status
+        )
+        balance_match_status = normalize_balance_confidence(
+            quote.metadata.get("balance_match_status") or health.balance_match_status
+        )
         quote_unavailable_raw = quote.metadata.get("quote_unavailable", "false").lower()
-        support_status = "bad" if quote_unavailable_raw == "true" else "good"
+        support_status = "unsupported" if quote_unavailable_raw == "true" else "supported"
         await repo.insert_route_health_snapshot(
             strategy=route.strategy,
             route_id=route.id,
@@ -588,20 +658,12 @@ class BotRunner:
                 {
                     "strategy_mode": strategy_mode.value,
                     "blocked_reason": quote.blocked_reason,
+                    "fee_provenance": quote.metadata.get("fee_provenance", ""),
+                    "quote_unavailable_reason": quote.metadata.get("quote_unavailable_reason", ""),
+                    "balance_failure_reason": quote.metadata.get("balance_failure_reason", ""),
                 }
             ),
         )
-
-    @staticmethod
-    def _parse_tristate_bool(raw: str | None) -> bool | None:
-        if raw is None:
-            return None
-        value = raw.strip().lower()
-        if value in {"true", "1", "yes"}:
-            return True
-        if value in {"false", "0", "no"}:
-            return False
-        return None
 
     def _build_unavailable_quote(self, route: Route, strategy_mode: RunMode, reason: str) -> RouteQuote:
         return RouteQuote(
@@ -627,20 +689,67 @@ class BotRunner:
                 "quote_unavailable": "true",
                 "quote_unavailable_reason": reason,
                 "fee_known": "unknown",
+                "fee_known_status": "unknown",
+                "fee_provenance": "unavailable",
                 "quote_match": "unknown",
+                "quote_match_status": "unknown",
+                "balance_match_status": "unknown",
+                "balance_failure_reason": "quote_unavailable",
                 "smaller_pool_liquidity_usdc": "0",
                 "venues": f"{route.venue_a}->{route.venue_b}",
                 "mode_profile": strategy_mode.value,
             },
         )
 
-    def _probe_signing_ok(self, route: Route) -> bool | None:
+    def _probe_signing_status(self, route: Route) -> str:
         if route.strategy != "hyperevm_dex_dex":
-            return True
+            return "good"
         client = self.live_engine.arb_client
         if client is None:
-            return None
+            return "unknown"
         try:
-            return client.validate_chain()
+            return "good" if client.validate_chain() else "bad"
         except Exception:
-            return False
+            return "bad"
+
+    async def _probe_wallet_usdc_balance(self) -> Decimal | None:
+        wallet = self.settings.hyperevm_wallet_address.strip()
+        token = self.settings.hyperevm_usdc.strip()
+        if not wallet or not token:
+            return None
+        wallet_hex = wallet.lower().replace("0x", "")
+        if len(wallet_hex) != 40:
+            return None
+        data = f"0x70a08231{wallet_hex.rjust(64, '0')}"
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "eth_call",
+            "params": [
+                {
+                    "to": token,
+                    "data": data,
+                },
+                "latest",
+            ],
+            "id": 3,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                response = await client.post(self.settings.hyperevm_rpc_url, json=payload)
+                response.raise_for_status()
+                body = response.json()
+            result = body.get("result")
+            if not isinstance(result, str):
+                return None
+            raw = int(result, 16)
+            scale = Decimal(10) ** self.settings.hyperevm_usdc_decimals
+            return (Decimal(raw) / scale).quantize(Decimal("0.00000001"))
+        except Exception:
+            return None
+
+    def _within_balance_tolerance(self, lhs: Decimal, rhs: Decimal) -> bool:
+        diff = abs(lhs - rhs)
+        if diff <= self.settings.balance_verify_tolerance_abs:
+            return True
+        baseline = max(abs(lhs), abs(rhs), Decimal("1"))
+        return diff / baseline <= self.settings.balance_verify_tolerance_ratio

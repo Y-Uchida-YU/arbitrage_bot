@@ -27,6 +27,8 @@ from app.api.schemas import (
     MetricOut,
     ModeSwitchRequest,
     OpportunityOut,
+    ReadinessSummaryOut,
+    RouteReadinessOut,
     RouteOut,
     RouteHealthSnapshotOut,
     StrategyControlRequest,
@@ -55,6 +57,35 @@ def _check_control_token(state: AppState, token: str) -> None:
     expected = state.settings.control_api_token.get_secret_value()
     if token != expected:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid control token")
+
+
+def _to_backtest_result_out(row: object) -> BacktestResultOut:
+    replay_mode = "unknown"
+    try:
+        metadata_raw = getattr(row, "metadata_json", "{}")
+        parsed = json.loads(metadata_raw)
+        if isinstance(parsed, dict):
+            replay_mode = str(parsed.get("replay_mode", "unknown"))
+    except Exception:
+        replay_mode = "unknown"
+    return BacktestResultOut(
+        id=getattr(row, "id"),
+        backtest_run_id=getattr(row, "backtest_run_id"),
+        signals=getattr(row, "signals"),
+        eligible_count=getattr(row, "eligible_count"),
+        blocked_count=getattr(row, "blocked_count"),
+        simulated_pnl=getattr(row, "simulated_pnl"),
+        hit_rate=getattr(row, "hit_rate"),
+        avg_modeled_edge_bps=getattr(row, "avg_modeled_edge_bps"),
+        avg_realized_like_pnl=getattr(row, "avg_realized_like_pnl"),
+        max_drawdown=getattr(row, "max_drawdown"),
+        worst_sequence=getattr(row, "worst_sequence"),
+        missed_opportunities=getattr(row, "missed_opportunities"),
+        replay_mode=replay_mode,
+        blocked_reason_json=getattr(row, "blocked_reason_json"),
+        metadata_json=getattr(row, "metadata_json"),
+        created_at=getattr(row, "created_at"),
+    )
 
 
 async def _persist_route_state(repo: Repository, state: AppState, route_id: str) -> None:
@@ -132,6 +163,16 @@ async def overview(
     data["live_arm_state"] = state.live_engine.runtime_armed
     data["quote_unavailable_venues"] = snapshot.quote_unavailable_venues
     data["venue_quote_health"] = [asdict(item) for item in state.health_collector.venue_quote_health()]
+    readiness_summary = await state.readiness_service.readiness_summary(repo)
+    data["readiness_summary"] = readiness_summary
+    latest_health_rows = await repo.list_latest_route_health_snapshots()
+    fee_distribution: dict[str, int] = {}
+    balance_distribution: dict[str, int] = {}
+    for row in latest_health_rows:
+        fee_distribution[row.fee_known_status] = fee_distribution.get(row.fee_known_status, 0) + 1
+        balance_distribution[row.balance_match_status] = balance_distribution.get(row.balance_match_status, 0) + 1
+    data["fee_confidence_distribution"] = fee_distribution
+    data["balance_confidence_distribution"] = balance_distribution
     return data
 
 
@@ -322,6 +363,43 @@ async def route_health(
             }
         )
     return output
+
+
+@router.get("/readiness/routes", response_model=list[RouteReadinessOut])
+async def readiness_routes(
+    request: Request,
+    route_id: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_async_session),
+) -> list[RouteReadinessOut]:
+    state = get_state(request)
+    repo = Repository(session)
+    rows = await state.readiness_service.route_readiness_rows(repo, route_id=route_id)
+    return [RouteReadinessOut.model_validate(row) for row in rows]
+
+
+@router.get("/readiness/routes/{route_id}", response_model=RouteReadinessOut)
+async def readiness_route_detail(
+    route_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+) -> RouteReadinessOut:
+    state = get_state(request)
+    repo = Repository(session)
+    rows = await state.readiness_service.route_readiness_rows(repo, route_id=route_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail="route readiness not found")
+    return RouteReadinessOut.model_validate(rows[0])
+
+
+@router.get("/readiness/summary", response_model=ReadinessSummaryOut)
+async def readiness_summary(
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+) -> ReadinessSummaryOut:
+    state = get_state(request)
+    repo = Repository(session)
+    summary = await state.readiness_service.readiness_summary(repo)
+    return ReadinessSummaryOut.model_validate(summary)
 
 
 @router.get("/blocked-reason-summary")
@@ -600,6 +678,7 @@ async def run_backtest(
         end_ts=payload.end_ts,
         parameter_set_id=payload.parameter_set_id,
         notes=payload.notes,
+        replay_mode=payload.replay_mode,
     )
     return result
 
@@ -621,7 +700,7 @@ async def backtest_results(
 ) -> list[BacktestResultOut]:
     repo = Repository(session)
     rows = await repo.list_backtest_results(limit=limit)
-    return [BacktestResultOut.model_validate(x, from_attributes=True) for x in rows]
+    return [_to_backtest_result_out(x) for x in rows]
 
 
 @router.get("/backtest/results/{run_id}")
@@ -635,7 +714,7 @@ async def backtest_result_detail(
         raise HTTPException(status_code=404, detail="backtest result not found")
     trades = await repo.list_backtest_trades(run_id, limit=5000)
     return {
-        "result": BacktestResultOut.model_validate(result, from_attributes=True),
+        "result": _to_backtest_result_out(result),
         "trades": [BacktestTradeOut.model_validate(x, from_attributes=True) for x in trades],
     }
 

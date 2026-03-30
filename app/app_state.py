@@ -15,6 +15,7 @@ from app.health.collector import HealthCollector
 from app.jobs.runner import BotRunner
 from app.quote_engine.edge import ModeledEdgeCalculator
 from app.quote_engine.engine import HyperDexDexQuoteEngine, ShadowCexDexQuoteEngine
+from app.readiness.service import ReadinessService
 from app.risk.manager import GlobalRiskManager
 
 
@@ -28,6 +29,7 @@ class AppState:
     live_engine: LiveDryRunExecutionEngine
     health_collector: HealthCollector
     backtest_engine: BacktestEngine
+    readiness_service: ReadinessService
     runner: BotRunner
 
 
@@ -36,6 +38,7 @@ def build_app_state(settings: Settings, session_factory: async_sessionmaker) -> 
     risk_manager = GlobalRiskManager(settings)
     health_collector = HealthCollector()
     backtest_engine = BacktestEngine(settings)
+    readiness_service = ReadinessService(settings)
 
     edge = ModeledEdgeCalculator(settings)
     hyper_dex = build_hyperevm_dex_adapters(settings)
@@ -69,5 +72,6 @@ def build_app_state(settings: Settings, session_factory: async_sessionmaker) -> 
         live_engine=live_engine,
         health_collector=health_collector,
         backtest_engine=backtest_engine,
+        readiness_service=readiness_service,
         runner=runner,
     )

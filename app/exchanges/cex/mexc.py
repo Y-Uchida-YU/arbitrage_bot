@@ -54,11 +54,15 @@ class MEXCSpotAdapter(CEXAdapter):
         return top
 
     async def get_trading_fee(self, symbol: str, side: str, maker_or_taker: str) -> int:
+        fee, _provenance = await self.get_trading_fee_details(symbol, side, maker_or_taker)
+        return fee
+
+    async def get_trading_fee_details(self, symbol: str, side: str, maker_or_taker: str) -> tuple[int, str]:
         _ = symbol
         _ = side
         if maker_or_taker.lower() == "maker":
-            return self.settings.mexc_maker_fee_bps_fallback
-        return self.settings.mexc_taker_fee_bps_fallback
+            return self.settings.mexc_maker_fee_bps_fallback, "fallback_only"
+        return self.settings.mexc_taker_fee_bps_fallback, "fallback_only"
 
     async def get_market_status(self, symbol: str) -> str:
         normalized = self.normalize_symbol(symbol)

@@ -66,6 +66,8 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
     routes = await repo.list_routes()
     runtime_states = await repo.list_route_runtime_states()
     route_health_rows = await repo.list_latest_route_health_snapshots()
+    readiness_rows = await state.readiness_service.route_readiness_rows(repo)
+    readiness_summary = await state.readiness_service.readiness_summary(repo)
     blocked_summary = await repo.blocked_reason_summary(since_minutes=120)
     cooldown_states = [state.risk_manager.get_route_state(route.id) for route in routes]
     global_health = state.health_collector.build_snapshot("global")
@@ -76,6 +78,13 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
     backtest_result_rows: list[dict[str, object]] = []
     for row in backtest_results:
         run = run_by_id.get(row.backtest_run_id)
+        result_meta: dict[str, object] = {}
+        try:
+            parsed_meta = json.loads(row.metadata_json)
+            if isinstance(parsed_meta, dict):
+                result_meta = parsed_meta
+        except Exception:
+            result_meta = {}
         backtest_result_rows.append(
             {
                 "backtest_run_id": row.backtest_run_id,
@@ -86,18 +95,26 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
                 "blocked_count": row.blocked_count,
                 "hit_rate": row.hit_rate,
                 "created_at": row.created_at,
+                "replay_mode": str(result_meta.get("replay_mode", "opportunities")),
             }
         )
     latest_backtest = backtest_results[0] if backtest_results else None
     latest_backtest_blocked: dict[str, int] = {}
     latest_backtest_trade_points: list[dict[str, object]] = []
     if latest_backtest is not None:
+        latest_backtest_meta: dict[str, object] = {}
         try:
             parsed = json.loads(latest_backtest.blocked_reason_json)
             if isinstance(parsed, dict):
                 latest_backtest_blocked = {str(k): int(v) for k, v in parsed.items()}
         except Exception:
             latest_backtest_blocked = {}
+        try:
+            parsed_meta = json.loads(latest_backtest.metadata_json)
+            if isinstance(parsed_meta, dict):
+                latest_backtest_meta = parsed_meta
+        except Exception:
+            latest_backtest_meta = {}
         trades_for_latest = await repo.list_backtest_trades(
             run_id=latest_backtest.backtest_run_id,
             limit=500,
@@ -110,6 +127,8 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
             }
             for row in trades_for_latest
         ]
+    else:
+        latest_backtest_meta = {}
 
     chart_points = [
         {"t": row.created_at.isoformat(), "v": float(row.realized_pnl)}
@@ -140,6 +159,11 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
     ]
     eligible_count = sum(1 for row in opportunities if row.status == "eligible")
     blocked_count = sum(1 for row in opportunities if row.status == "blocked")
+    fee_distribution: dict[str, int] = {}
+    balance_distribution: dict[str, int] = {}
+    for row in route_health_rows:
+        fee_distribution[row.fee_known_status] = fee_distribution.get(row.fee_known_status, 0) + 1
+        balance_distribution[row.balance_match_status] = balance_distribution.get(row.balance_match_status, 0) + 1
 
     context = {
         "request": request,
@@ -161,13 +185,18 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
         "venue_quote_health": venue_quote_health,
         "runtime_states": runtime_states,
         "route_health_rows": route_health_rows,
+        "readiness_rows": readiness_rows,
+        "readiness_summary": readiness_summary,
         "backtest_runs": backtest_runs,
         "backtest_results": backtest_results,
         "backtest_result_rows": backtest_result_rows,
         "latest_backtest": latest_backtest,
+        "latest_backtest_meta": latest_backtest_meta,
         "latest_backtest_blocked": latest_backtest_blocked,
         "backtest_pnl_points": backtest_pnl_points,
         "latest_backtest_trade_points": latest_backtest_trade_points,
+        "fee_confidence_distribution": fee_distribution,
+        "balance_confidence_distribution": balance_distribution,
         "live_arm_state": state.live_engine.runtime_armed,
         "metric_snapshot": metrics_store.snapshot(),
     }

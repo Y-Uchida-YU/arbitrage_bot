@@ -46,10 +46,13 @@ def _healthy_snapshot() -> HealthSnapshot:
         signing_ok=True,
         signing_known=True,
         fee_known=True,
+        fee_known_status="chain_verified",
         quote_match=True,
         quote_match_known=True,
+        quote_match_status="matched",
         balance_match=True,
         balance_match_known=True,
+        balance_match_status="wallet_verified",
         clock_skew_ok=True,
         contract_revert_rate=Decimal("0"),
     )

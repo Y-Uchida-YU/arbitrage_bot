@@ -7,6 +7,11 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from app.health.types import CommissioningHealthSnapshot, VenueQuoteHealth
 from app.risk.manager import HealthSnapshot
+from app.utils.confidence import (
+    normalize_balance_confidence,
+    normalize_fee_confidence,
+    normalize_quote_match_status,
+)
 
 
 @dataclass(slots=True)
@@ -38,9 +43,11 @@ class HealthCollector:
         self._heartbeat_ts: datetime = datetime.now(timezone.utc)
         self._last_quality_update: datetime = datetime.now(timezone.utc)
         self._signing_state: str = "unknown"
-        self._fee_state: str = "unknown"
-        self._quote_match_state: str = "unknown"
-        self._balance_state: str = "unknown"
+        self._fee_status: str = "unknown"
+        self._fee_provenance: str = ""
+        self._quote_match_status: str = "unknown"
+        self._balance_status: str = "unknown"
+        self._balance_failure_reason: str = ""
 
     def record_rpc_probe(self, latency_ms: Decimal, ok: bool) -> None:
         now = datetime.now(timezone.utc)
@@ -98,15 +105,19 @@ class HealthCollector:
     def set_quality_status(
         self,
         *,
-        signing_ok: bool | None,
-        fee_known: bool | None,
-        quote_match: bool | None,
-        balance_match: bool | None,
+        signing_status: str | None,
+        fee_known_status: str | None,
+        fee_provenance: str | None,
+        quote_match_status: str | None,
+        balance_match_status: str | None,
+        balance_failure_reason: str | None = None,
     ) -> None:
-        self._signing_state = self._state_from_optional(signing_ok)
-        self._fee_state = self._state_from_optional(fee_known)
-        self._quote_match_state = self._state_from_optional(quote_match)
-        self._balance_state = self._state_from_optional(balance_match)
+        self._signing_state = self._normalize_signing_state(signing_status)
+        self._fee_status = normalize_fee_confidence(fee_known_status)
+        self._fee_provenance = (fee_provenance or "").strip().lower()
+        self._quote_match_status = normalize_quote_match_status(quote_match_status)
+        self._balance_status = normalize_balance_confidence(balance_match_status)
+        self._balance_failure_reason = (balance_failure_reason or "").strip().lower()
         self._last_quality_update = datetime.now(timezone.utc)
 
     def build_snapshot(self, route_id: str) -> CommissioningHealthSnapshot:
@@ -212,11 +223,16 @@ class HealthCollector:
             rpc_known=rpc_known,
             signing_ok=self._signing_state == "good",
             signing_known=self._signing_state != "unknown",
-            fee_known=self._fee_state == "good",
-            quote_match=self._quote_match_state == "good",
-            quote_match_known=self._quote_match_state != "unknown",
-            balance_match=self._balance_state == "good",
-            balance_match_known=self._balance_state != "unknown",
+            fee_known=self._fee_status != "unknown",
+            fee_known_status=self._fee_status,
+            fee_provenance=self._fee_provenance,
+            quote_match=self._quote_match_status == "matched",
+            quote_match_known=self._quote_match_status != "unknown",
+            quote_match_status=self._quote_match_status,
+            balance_match=self._balance_status not in {"unknown", "mismatch"},
+            balance_match_known=self._balance_status != "unknown",
+            balance_match_status=self._balance_status,
+            balance_failure_reason=self._balance_failure_reason,
             clock_skew_ok=snap.heartbeat_lag_seconds < Decimal("10"),
             contract_revert_rate=snap.contract_revert_rate,
         )
@@ -271,7 +287,12 @@ class HealthCollector:
         return values[idx]
 
     @staticmethod
-    def _state_from_optional(value: bool | None) -> str:
-        if value is None:
-            return "unknown"
-        return "good" if value else "bad"
+    def _normalize_signing_state(value: str | None) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized in {"good", "bad", "unknown"}:
+            return normalized
+        if normalized in {"true", "1", "yes"}:
+            return "good"
+        if normalized in {"false", "0", "no"}:
+            return "bad"
+        return "unknown"
