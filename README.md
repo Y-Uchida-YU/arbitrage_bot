@@ -121,6 +121,9 @@ Even after switching to live mode, initial implementation keeps real submission 
 - `GET /api/readiness/summary`
 - `GET /api/readiness/routes`
 - `GET /api/readiness/routes/{route_id}`
+- `GET /api/commissioning/summary`
+- `GET /api/commissioning/routes`
+- `GET /api/commissioning/routes/{route_id}`
 - `GET /api/blocked-reason-summary`
 - `GET /api/cooldowns`
 - `GET /api/market-snapshots`
@@ -186,6 +189,48 @@ Replay modes:
   - fee/balance thresholds are observation-aware (`fallback_only`+, `internal_ok`+)
   - route is intentionally treated as observation-only (typically `yellow`, not auto-promoted to live-intent `green`)
 
+## Commissioning Promotion Gates
+
+Commissioning gates are route-type specific and fail-safe. Any critical fail blocks promotion.
+
+- Promotion statuses:
+  - `not_ready`
+  - `observation_ready` (shadow observation route only)
+  - `review_ready` (live-intent review stage)
+  - `promotion_blocked` (one or more critical gate fails)
+- Phase states:
+  - `phase_0_mock_sanity`
+  - `phase_1_real_observation`
+  - `phase_2_replay_review`
+  - `phase_3_commissioning_review`
+
+HyperEVM live-intent (`hyperevm_dex_dex`) minimum gates:
+
+- observation window >= 14 days
+- market snapshots >= 5,000
+- opportunities >= 300
+- market-snapshot replay runs >= 3
+- opportunities replay runs >= 3
+- quote unavailable rate <= 5%
+- fatal pause unresolved = false
+- readiness grade != red
+
+Base shadow (`base_virtual_shadow`) minimum gates:
+
+- observation window >= 7 days
+- market snapshots >= 3,000
+- opportunities >= 200
+- total backtest runs >= 2
+- quote unavailable rate <= 10%
+- fatal pause unresolved = false
+- readiness grade != red
+
+Important:
+
+- Shadow `observation_ready` is not live promotion approval.
+- `review_ready` or readiness `green` never enables live submit automatically.
+- Human sign-off is mandatory and `LIVE_EXECUTION_ENABLED` remains `false` by default.
+
 ## Environment Variables
 
 See [.env.example](.env.example) for the full list.
@@ -218,6 +263,21 @@ High-impact variables:
 - `HYPEREVM_WALLET_ADDRESS`
 - `HYPEREVM_RAMSES_QUOTER_FEE_TIER` / `HYPEREVM_RAMSES_POOL_FEE_TIER` / `HYPEREVM_RAMSES_ECONOMIC_FEE_BPS`
 - `HYPEREVM_HYBRA_QUOTER_FEE_TIER` / `HYPEREVM_HYBRA_POOL_FEE_TIER` / `HYPEREVM_HYBRA_ECONOMIC_FEE_BPS`
+- `COMMISSIONING_LIVE_MIN_OBSERVATION_DAYS`
+- `COMMISSIONING_LIVE_MIN_MARKET_SNAPSHOTS`
+- `COMMISSIONING_LIVE_MIN_OPPORTUNITIES`
+- `COMMISSIONING_LIVE_MIN_BACKTEST_RUNS_MARKET_SNAPSHOTS`
+- `COMMISSIONING_LIVE_MIN_BACKTEST_RUNS_OPPORTUNITIES`
+- `COMMISSIONING_LIVE_MAX_QUOTE_UNAVAILABLE_RATE`
+- `COMMISSIONING_SHADOW_MIN_OBSERVATION_DAYS`
+- `COMMISSIONING_SHADOW_MIN_MARKET_SNAPSHOTS`
+- `COMMISSIONING_SHADOW_MIN_OPPORTUNITIES`
+- `COMMISSIONING_SHADOW_MIN_BACKTEST_RUNS_TOTAL`
+- `COMMISSIONING_SHADOW_MAX_QUOTE_UNAVAILABLE_RATE`
+- `COMMISSIONING_WARN_HEALTH_UNKNOWN_RATE` / `COMMISSIONING_FAIL_HEALTH_UNKNOWN_RATE`
+- `COMMISSIONING_WARN_FEE_UNVERIFIED_RATE` / `COMMISSIONING_FAIL_FEE_UNVERIFIED_RATE`
+- `COMMISSIONING_WARN_BALANCE_UNVERIFIED_RATE` / `COMMISSIONING_FAIL_BALANCE_UNVERIFIED_RATE`
+- `COMMISSIONING_WARN_QUOTE_MISMATCH_RATE` / `COMMISSIONING_FAIL_QUOTE_MISMATCH_RATE`
 
 ## Major Risks
 
@@ -293,3 +353,4 @@ Behavior is fail-safe:
 - [COMMISSIONING_PLAN.md](COMMISSIONING_PLAN.md)
 - [BACKTESTING.md](BACKTESTING.md)
 - [LIVE_READINESS_CHECKLIST.md](LIVE_READINESS_CHECKLIST.md)
+- [PROMOTION_GATES.md](PROMOTION_GATES.md)

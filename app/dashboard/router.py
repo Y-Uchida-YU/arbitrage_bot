@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import io
 import json
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
@@ -24,6 +26,11 @@ from app.utils.metrics import metrics_store
 
 router = APIRouter(tags=["dashboard"])
 templates = Jinja2Templates(directory="app/dashboard/templates")
+
+
+def _hour_bucket(dt: datetime) -> str:
+    utc_dt = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return utc_dt.replace(minute=0, second=0, microsecond=0).isoformat()
 
 
 def _enrich_opportunity_row(row: Opportunity) -> dict[str, object]:
@@ -99,6 +106,8 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
     route_health_view = [_enrich_route_health_row(row) for row in route_health_rows]
     readiness_rows = await state.readiness_service.route_readiness_rows(repo)
     readiness_summary = await state.readiness_service.readiness_summary(repo)
+    commissioning_rows = await state.commissioning_service.commissioning_route_rows(repo)
+    commissioning_summary = await state.commissioning_service.commissioning_summary(repo)
     blocked_summary = await repo.blocked_reason_summary(since_minutes=120)
     cooldown_states = [state.risk_manager.get_route_state(route.id) for route in routes]
     global_health = state.health_collector.build_snapshot("global")
@@ -188,6 +197,55 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
         {"t": row.created_at.isoformat(), "v": float(row.simulated_pnl)}
         for row in reversed(backtest_results)
     ]
+    window_start = datetime.now(timezone.utc) - timedelta(hours=24)
+    recent_snapshots = await repo.list_market_snapshots_since(window_start, limit=100000)
+    recent_opportunities = await repo.list_opportunities_since(window_start, limit=100000)
+
+    obs_bucket: dict[str, int] = {}
+    opp_total_bucket: dict[str, int] = {}
+    blocked_bucket: dict[str, int] = {}
+    quote_unavailable_bucket: dict[str, int] = {}
+    for row in recent_snapshots:
+        key = _hour_bucket(row.timestamp)
+        obs_bucket[key] = obs_bucket.get(key, 0) + 1
+    for row in recent_opportunities:
+        key = _hour_bucket(row.timestamp)
+        opp_total_bucket[key] = opp_total_bucket.get(key, 0) + 1
+        if row.blocked_reason:
+            blocked_bucket[key] = blocked_bucket.get(key, 0) + 1
+            if row.blocked_reason == "quote_unavailable":
+                quote_unavailable_bucket[key] = quote_unavailable_bucket.get(key, 0) + 1
+
+    trend_keys = sorted(set(obs_bucket) | set(opp_total_bucket))
+    observation_trend_points = [{"t": key, "v": obs_bucket.get(key, 0)} for key in trend_keys]
+    quote_unavailable_trend_points: list[dict[str, object]] = []
+    blocked_reason_trend_points: list[dict[str, object]] = []
+    for key in trend_keys:
+        total = opp_total_bucket.get(key, 0)
+        unavailable = quote_unavailable_bucket.get(key, 0)
+        blocked = blocked_bucket.get(key, 0)
+        rate = Decimal("0")
+        if total > 0:
+            rate = Decimal(unavailable) / Decimal(total)
+        quote_unavailable_trend_points.append({"t": key, "v": float(rate)})
+        blocked_reason_trend_points.append(
+            {"t": key, "blocked": blocked, "quote_unavailable": unavailable}
+        )
+
+    readiness_grade_distribution: dict[str, int] = {"red": 0, "yellow": 0, "green": 0}
+    for row in readiness_rows:
+        grade = str(row["readiness_grade"])
+        readiness_grade_distribution[grade] = readiness_grade_distribution.get(grade, 0) + 1
+
+    promotion_gate_distribution: dict[str, int] = {
+        "not_ready": 0,
+        "observation_ready": 0,
+        "review_ready": 0,
+        "promotion_blocked": 0,
+    }
+    for row in commissioning_rows:
+        status = str(row["promotion_gate_status"])
+        promotion_gate_distribution[status] = promotion_gate_distribution.get(status, 0) + 1
     eligible_count = sum(1 for row in opportunities if row.status == "eligible")
     blocked_count = sum(1 for row in opportunities if row.status == "blocked")
     fee_distribution: dict[str, int] = {}
@@ -220,6 +278,8 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
         "route_health_rows": route_health_view,
         "readiness_rows": readiness_rows,
         "readiness_summary": readiness_summary,
+        "commissioning_rows": commissioning_rows,
+        "commissioning_summary": commissioning_summary,
         "backtest_runs": backtest_runs,
         "backtest_results": backtest_results,
         "backtest_result_rows": backtest_result_rows,
@@ -230,6 +290,11 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
         "latest_backtest_trade_points": latest_backtest_trade_points,
         "fee_confidence_distribution": fee_distribution,
         "balance_confidence_distribution": balance_distribution,
+        "observation_trend_points": observation_trend_points,
+        "quote_unavailable_trend_points": quote_unavailable_trend_points,
+        "blocked_reason_trend_points": blocked_reason_trend_points,
+        "readiness_grade_distribution": readiness_grade_distribution,
+        "promotion_gate_distribution": promotion_gate_distribution,
         "live_arm_state": state.live_engine.runtime_armed,
         "metric_snapshot": metrics_store.snapshot(),
     }

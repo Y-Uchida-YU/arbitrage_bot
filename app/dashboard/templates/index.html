@@ -25,7 +25,15 @@
       <div class="kpi"><div class="label">Readiness Red</div><div class="value mono">{{ readiness_summary.red_count if readiness_summary is defined else 0 }}</div></div>
       <div class="kpi"><div class="label">Readiness Yellow</div><div class="value mono">{{ readiness_summary.yellow_count if readiness_summary is defined else 0 }}</div></div>
       <div class="kpi"><div class="label">Readiness Green</div><div class="value mono">{{ readiness_summary.green_count if readiness_summary is defined else 0 }}</div></div>
-      <div class="kpi"><div class="label">Latest Backtest Mode</div><div class="value">{{ latest_backtest_meta.replay_mode if latest_backtest_meta is defined and latest_backtest_meta.replay_mode is defined else 'n/a' }}</div></div>
+      <div class="kpi"><div class="label">Latest Backtest Mode</div><div class="value">{{ readiness_summary.latest_backtest_mode if readiness_summary is defined else 'n/a' }}</div></div>
+      <div class="kpi"><div class="label">Routes Not Ready</div><div class="value mono">{{ commissioning_summary.routes_not_ready if commissioning_summary is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Observation Ready</div><div class="value mono">{{ commissioning_summary.routes_observation_ready if commissioning_summary is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Review Ready</div><div class="value mono">{{ commissioning_summary.routes_review_ready if commissioning_summary is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Promotion Blocked</div><div class="value mono">{{ commissioning_summary.routes_promotion_blocked if commissioning_summary is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Live-Intent Routes</div><div class="value mono">{{ commissioning_summary.live_intent_routes if commissioning_summary is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Shadow Routes</div><div class="value mono">{{ commissioning_summary.shadow_routes if commissioning_summary is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Gate Fail Routes</div><div class="value mono">{{ commissioning_summary.gate_fail_route_count if commissioning_summary is defined else 0 }}</div></div>
+      <div class="kpi"><div class="label">Gate Warn Routes</div><div class="value mono">{{ commissioning_summary.gate_warn_route_count if commissioning_summary is defined else 0 }}</div></div>
     </article>
 
     <article class="card wide">
@@ -130,6 +138,24 @@
           <tr><td>yellow</td><td class="mono">{{ readiness_summary.yellow_count if readiness_summary is defined else 0 }}</td></tr>
           <tr><td>green</td><td class="mono">{{ readiness_summary.green_count if readiness_summary is defined else 0 }}</td></tr>
           <tr><td>latest mode</td><td>{{ readiness_summary.latest_backtest_mode if readiness_summary is defined else '-' }}</td></tr>
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card half">
+      <h3>Commissioning Summary</h3>
+      <table>
+        <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>total routes</td><td class="mono">{{ commissioning_summary.total_routes if commissioning_summary is defined else 0 }}</td></tr>
+          <tr><td>not_ready</td><td class="mono">{{ commissioning_summary.routes_not_ready if commissioning_summary is defined else 0 }}</td></tr>
+          <tr><td>observation_ready</td><td class="mono">{{ commissioning_summary.routes_observation_ready if commissioning_summary is defined else 0 }}</td></tr>
+          <tr><td>review_ready</td><td class="mono">{{ commissioning_summary.routes_review_ready if commissioning_summary is defined else 0 }}</td></tr>
+          <tr><td>promotion_blocked</td><td class="mono">{{ commissioning_summary.routes_promotion_blocked if commissioning_summary is defined else 0 }}</td></tr>
+          <tr><td>phase_0</td><td class="mono">{{ commissioning_summary.phase_counts.phase_0_mock_sanity if commissioning_summary is defined and commissioning_summary.phase_counts is defined and commissioning_summary.phase_counts.phase_0_mock_sanity is defined else 0 }}</td></tr>
+          <tr><td>phase_1</td><td class="mono">{{ commissioning_summary.phase_counts.phase_1_real_observation if commissioning_summary is defined and commissioning_summary.phase_counts is defined and commissioning_summary.phase_counts.phase_1_real_observation is defined else 0 }}</td></tr>
+          <tr><td>phase_2</td><td class="mono">{{ commissioning_summary.phase_counts.phase_2_replay_review if commissioning_summary is defined and commissioning_summary.phase_counts is defined and commissioning_summary.phase_counts.phase_2_replay_review is defined else 0 }}</td></tr>
+          <tr><td>phase_3</td><td class="mono">{{ commissioning_summary.phase_counts.phase_3_commissioning_review if commissioning_summary is defined and commissioning_summary.phase_counts is defined and commissioning_summary.phase_counts.phase_3_commissioning_review is defined else 0 }}</td></tr>
         </tbody>
       </table>
     </article>
@@ -251,6 +277,31 @@
       </table>
     </article>
 
+    <article class="card wide">
+      <h3>Commissioning Route Gates</h3>
+      <table>
+        <thead><tr><th>Route</th><th>Type</th><th>Phase</th><th>Readiness</th><th>Gate</th><th>Obs Days</th><th>Snapshots</th><th>Opps</th><th>Quote Unavail</th><th>Backtests</th><th>Blockers</th><th>Action</th></tr></thead>
+        <tbody>
+          {% for row in commissioning_rows %}
+            <tr>
+              <td class="mono">{{ row.route_id }}</td>
+              <td>{{ row.route_type }}</td>
+              <td>{{ row.phase }}</td>
+              <td>{{ row.readiness_grade }}</td>
+              <td>{{ row.promotion_gate_status }}</td>
+              <td class="mono">{{ row.observation_window_days }}</td>
+              <td class="mono">{{ row.market_snapshot_count }}</td>
+              <td class="mono">{{ row.opportunity_count }}</td>
+              <td class="mono">{{ row.quote_unavailable_rate }}</td>
+              <td class="mono">{{ row.backtest_run_count_total }} (snap={{ row.backtest_run_count_market_snapshots }}, opp={{ row.backtest_run_count_opportunities }})</td>
+              <td>{{ row.gate_blockers|join(', ') }}</td>
+              <td>{{ row.human_action_items[0] if row.human_action_items else '-' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
     <article class="card half">
       <h3>Fee Confidence Distribution</h3>
       <table>
@@ -360,6 +411,31 @@
     <article class="card wide">
       <h3>Backtest Signal Timeline</h3>
       <canvas id="backtestTimelineChart" height="100"></canvas>
+    </article>
+
+    <article class="card half">
+      <h3>Observation Count Trend (24h)</h3>
+      <canvas id="observationTrendChart" height="110"></canvas>
+    </article>
+
+    <article class="card half">
+      <h3>Quote Unavailable Rate Trend (24h)</h3>
+      <canvas id="quoteUnavailableTrendChart" height="110"></canvas>
+    </article>
+
+    <article class="card half">
+      <h3>Blocked Reason Trend (24h)</h3>
+      <canvas id="blockedTrendChart" height="110"></canvas>
+    </article>
+
+    <article class="card half">
+      <h3>Readiness Grade Distribution</h3>
+      <canvas id="readinessDistChart" height="160"></canvas>
+    </article>
+
+    <article class="card half">
+      <h3>Promotion Gate Distribution</h3>
+      <canvas id="promotionGateChart" height="160"></canvas>
     </article>
 
     <article id="opportunities-pane" class="card wide" hx-get="/dashboard/opportunities" hx-include="#opp-filter" hx-trigger="load, every 5s" hx-swap="innerHTML">
@@ -495,6 +571,59 @@
         datasets: [{ label: "sim pnl", data: btTimeline.map((p) => p.pnl), borderColor: "#4b2f00", pointRadius: 0 }]
       },
       options: { scales: { x: { ticks: { maxTicksLimit: 10 } } } }
+    });
+
+    const observationTrendPoints = {{ observation_trend_points | tojson }};
+    new Chart(document.getElementById("observationTrendChart"), {
+      type: "line",
+      data: {
+        labels: observationTrendPoints.map((p) => p.t),
+        datasets: [{ label: "snapshots", data: observationTrendPoints.map((p) => p.v), borderColor: "#0f8f96", pointRadius: 0 }]
+      },
+      options: { scales: { x: { ticks: { maxTicksLimit: 8 } } } }
+    });
+
+    const quoteUnavailableTrendPoints = {{ quote_unavailable_trend_points | tojson }};
+    new Chart(document.getElementById("quoteUnavailableTrendChart"), {
+      type: "line",
+      data: {
+        labels: quoteUnavailableTrendPoints.map((p) => p.t),
+        datasets: [{ label: "quote unavailable rate", data: quoteUnavailableTrendPoints.map((p) => p.v), borderColor: "#b00020", pointRadius: 0 }]
+      },
+      options: { scales: { x: { ticks: { maxTicksLimit: 8 } }, y: { beginAtZero: true } } }
+    });
+
+    const blockedTrendPoints = {{ blocked_reason_trend_points | tojson }};
+    new Chart(document.getElementById("blockedTrendChart"), {
+      type: "line",
+      data: {
+        labels: blockedTrendPoints.map((p) => p.t),
+        datasets: [
+          { label: "blocked total", data: blockedTrendPoints.map((p) => p.blocked), borderColor: "#8a1f1f", pointRadius: 0 },
+          { label: "quote unavailable", data: blockedTrendPoints.map((p) => p.quote_unavailable), borderColor: "#9b6a00", pointRadius: 0 }
+        ]
+      },
+      options: { scales: { x: { ticks: { maxTicksLimit: 8 } }, y: { beginAtZero: true } } }
+    });
+
+    const readinessDistribution = {{ readiness_grade_distribution | tojson }};
+    new Chart(document.getElementById("readinessDistChart"), {
+      type: "doughnut",
+      data: {
+        labels: Object.keys(readinessDistribution),
+        datasets: [{ data: Object.values(readinessDistribution), backgroundColor: ["#b00020", "#9b6a00", "#1f7a42"] }]
+      },
+      options: { plugins: { legend: { position: "bottom" } } }
+    });
+
+    const promotionDistribution = {{ promotion_gate_distribution | tojson }};
+    new Chart(document.getElementById("promotionGateChart"), {
+      type: "bar",
+      data: {
+        labels: Object.keys(promotionDistribution),
+        datasets: [{ label: "routes", data: Object.values(promotionDistribution), backgroundColor: "#2d5f5f" }]
+      },
+      options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
     });
   </script>
 {% endblock %}

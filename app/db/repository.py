@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -621,6 +622,19 @@ class Repository:
         rows = await self.session.scalars(query.order_by(MarketSnapshot.timestamp.desc()).limit(limit))
         return list(rows)
 
+    async def list_market_snapshots_since(
+        self,
+        since: datetime,
+        *,
+        route_id: str | None = None,
+        limit: int = 100000,
+    ) -> list[MarketSnapshot]:
+        query = select(MarketSnapshot).where(MarketSnapshot.timestamp >= since)
+        if route_id:
+            query = query.where(MarketSnapshot.route_id == route_id)
+        rows = await self.session.scalars(query.order_by(MarketSnapshot.timestamp.asc()).limit(limit))
+        return list(rows)
+
     async def list_market_snapshots_for_backtest(
         self,
         strategy: str,
@@ -680,6 +694,19 @@ class Repository:
             self._canonicalize_route_health_row(row)
         return output
 
+    async def list_opportunities_since(
+        self,
+        since: datetime,
+        *,
+        route_id: str | None = None,
+        limit: int = 100000,
+    ) -> list[Opportunity]:
+        query = select(Opportunity).where(Opportunity.timestamp >= since)
+        if route_id:
+            query = query.where(Opportunity.route_id == route_id)
+        rows = await self.session.scalars(query.order_by(Opportunity.timestamp.asc()).limit(limit))
+        return list(rows)
+
     async def market_snapshot_stats_for_route(self, route_id: str) -> dict[str, object]:
         count_value = await self.session.scalar(
             select(func.count(MarketSnapshot.id)).where(MarketSnapshot.route_id == route_id)
@@ -690,6 +717,30 @@ class Repository:
         return {
             "observation_count": int(count_value or 0),
             "last_observation_at": last_ts,
+        }
+
+    async def observation_window_for_route(self, route_id: str, source_type: str = "real") -> dict[str, object]:
+        query = select(MarketSnapshot).where(MarketSnapshot.route_id == route_id)
+        if source_type:
+            query = query.where(MarketSnapshot.source_type == source_type)
+        count_value = int(await self.session.scalar(select(func.count()).select_from(query.subquery())) or 0)
+        min_ts = await self.session.scalar(select(func.min(MarketSnapshot.timestamp)).where(
+            MarketSnapshot.route_id == route_id,
+            MarketSnapshot.source_type == source_type,
+        ))
+        max_ts = await self.session.scalar(select(func.max(MarketSnapshot.timestamp)).where(
+            MarketSnapshot.route_id == route_id,
+            MarketSnapshot.source_type == source_type,
+        ))
+        window_days = Decimal("0")
+        if min_ts is not None and max_ts is not None:
+            seconds = Decimal(str((max_ts - min_ts).total_seconds()))
+            window_days = (seconds / Decimal("86400")).quantize(Decimal("0.00001"))
+        return {
+            "market_snapshot_count": count_value,
+            "observation_start": min_ts,
+            "observation_end": max_ts,
+            "observation_window_days": window_days,
         }
 
     async def opportunity_stats_for_route(self, route_id: str, since_hours: int = 24) -> dict[str, object]:
@@ -762,6 +813,120 @@ class Repository:
             "last_backtest_status": latest_run.status if latest_run is not None else "none",
             "last_backtest_pnl": latest_result.simulated_pnl if latest_result is not None else Decimal("0"),
             "last_backtest_mode": replay_mode,
+        }
+
+    async def fatal_pause_count_for_route(self, route_id: str) -> int:
+        value = await self.session.scalar(
+            select(func.count(TradeAttempt.id)).where(
+                TradeAttempt.route_id == route_id,
+                TradeAttempt.is_fatal_failure.is_(True),
+            )
+        )
+        return int(value or 0)
+
+    async def cooldown_event_count_for_route(self, route_id: str) -> int:
+        value = await self.session.scalar(
+            select(func.count(TradeAttempt.id)).where(
+                TradeAttempt.route_id == route_id,
+                TradeAttempt.cooldown_triggered.is_(True),
+            )
+        )
+        return int(value or 0)
+
+    async def commissioning_stats_for_route(self, route_id: str) -> dict[str, object]:
+        observation = await self.observation_window_for_route(route_id, source_type="real")
+        opportunity_count = int(
+            await self.session.scalar(
+                select(func.count(Opportunity.id)).where(Opportunity.route_id == route_id)
+            )
+            or 0
+        )
+        blocked_rows = await self.session.execute(
+            select(Opportunity.blocked_reason, func.count(Opportunity.id))
+            .where(
+                Opportunity.route_id == route_id,
+                Opportunity.blocked_reason != "",
+            )
+            .group_by(Opportunity.blocked_reason)
+            .order_by(func.count(Opportunity.id).desc())
+        )
+        blocked_counts = {str(reason): int(count) for reason, count in blocked_rows.all()}
+        total_opps_decimal = Decimal(opportunity_count) if opportunity_count > 0 else Decimal("1")
+        quote_unavailable_rate = Decimal(blocked_counts.get("quote_unavailable", 0)) / total_opps_decimal
+        health_unknown_rate = Decimal(blocked_counts.get("health_unknown", 0)) / total_opps_decimal
+        fee_unverified_rate = Decimal(blocked_counts.get("fee_unverified", 0)) / total_opps_decimal
+        balance_unverified_rate = Decimal(blocked_counts.get("balance_unverified", 0)) / total_opps_decimal
+        quote_mismatch_rate = Decimal(blocked_counts.get("quote_mismatch", 0)) / total_opps_decimal
+        blocked_top_n = [
+            {"blocked_reason": reason, "count": count}
+            for reason, count in sorted(blocked_counts.items(), key=lambda item: item[1], reverse=True)[:5]
+        ]
+
+        runs = list(
+            await self.session.scalars(
+                select(BacktestRun).where(BacktestRun.route_id == route_id).order_by(BacktestRun.created_at.desc())
+            )
+        )
+        run_count_total = len(runs)
+        results_by_run_id = {
+            row.backtest_run_id: row
+            for row in (
+                await self.session.scalars(
+                    select(BacktestResult)
+                    .join(BacktestRun, BacktestRun.id == BacktestResult.backtest_run_id)
+                    .where(BacktestRun.route_id == route_id)
+                    .order_by(BacktestResult.created_at.desc())
+                )
+            )
+        }
+        backtest_mode_counts: dict[str, int] = {"opportunities": 0, "market_snapshots": 0}
+        pnl_values: list[Decimal] = []
+        drawdowns: list[Decimal] = []
+        latest_backtest_pnl = Decimal("0")
+        latest_backtest_mode = "none"
+        for run in runs:
+            result = results_by_run_id.get(run.id)
+            mode = "unknown"
+            if result is not None:
+                payload = self._safe_json(result.metadata_json)
+                mode = str(payload.get("replay_mode", "")).strip().lower() or "unknown"
+                pnl_values.append(Decimal(result.simulated_pnl))
+                drawdowns.append(Decimal(result.max_drawdown))
+                if latest_backtest_mode == "none":
+                    latest_backtest_pnl = Decimal(result.simulated_pnl)
+                    latest_backtest_mode = mode
+            else:
+                mode = self._extract_replay_mode_from_notes(run.notes)
+            if mode not in backtest_mode_counts:
+                backtest_mode_counts[mode] = 0
+            backtest_mode_counts[mode] += 1
+        median_backtest_pnl = Decimal("0")
+        worst_backtest_drawdown = Decimal("0")
+        if pnl_values:
+            median_backtest_pnl = Decimal(str(statistics.median(pnl_values)))
+        if drawdowns:
+            worst_backtest_drawdown = max(drawdowns)
+
+        return {
+            "observation_window_days": observation["observation_window_days"],
+            "market_snapshot_count": observation["market_snapshot_count"],
+            "opportunity_count": opportunity_count,
+            "backtest_run_count_total": run_count_total,
+            "backtest_run_count_market_snapshots": backtest_mode_counts.get("market_snapshots", 0),
+            "backtest_run_count_opportunities": backtest_mode_counts.get("opportunities", 0),
+            "quote_unavailable_rate": quote_unavailable_rate if opportunity_count > 0 else Decimal("0"),
+            "health_unknown_rate": health_unknown_rate if opportunity_count > 0 else Decimal("0"),
+            "fee_unverified_rate": fee_unverified_rate if opportunity_count > 0 else Decimal("0"),
+            "balance_unverified_rate": balance_unverified_rate if opportunity_count > 0 else Decimal("0"),
+            "quote_mismatch_rate": quote_mismatch_rate if opportunity_count > 0 else Decimal("0"),
+            "fatal_pause_count": await self.fatal_pause_count_for_route(route_id),
+            "cooldown_event_count": await self.cooldown_event_count_for_route(route_id),
+            "blocked_reason_top_n": blocked_top_n,
+            "latest_backtest_pnl": latest_backtest_pnl,
+            "median_backtest_pnl": median_backtest_pnl,
+            "worst_backtest_drawdown": worst_backtest_drawdown,
+            "latest_backtest_mode": latest_backtest_mode,
+            "backtest_mode_counts": backtest_mode_counts,
         }
 
     async def latest_backtest_mode(self) -> str:

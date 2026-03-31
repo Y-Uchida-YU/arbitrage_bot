@@ -145,6 +145,27 @@ class Settings(BaseSettings):
     shadow_min_balance_confidence_for_readiness: str = "internal_ok"
     shadow_min_quote_match_for_readiness: str = "matched"
 
+    # Commissioning / promotion gate thresholds
+    commissioning_live_min_observation_days: int = 14
+    commissioning_live_min_market_snapshots: int = 5000
+    commissioning_live_min_opportunities: int = 300
+    commissioning_live_min_backtest_runs_market_snapshots: int = 3
+    commissioning_live_min_backtest_runs_opportunities: int = 3
+    commissioning_live_max_quote_unavailable_rate: Decimal = Decimal("0.05")
+    commissioning_shadow_min_observation_days: int = 7
+    commissioning_shadow_min_market_snapshots: int = 3000
+    commissioning_shadow_min_opportunities: int = 200
+    commissioning_shadow_min_backtest_runs_total: int = 2
+    commissioning_shadow_max_quote_unavailable_rate: Decimal = Decimal("0.10")
+    commissioning_warn_health_unknown_rate: Decimal = Decimal("0.10")
+    commissioning_fail_health_unknown_rate: Decimal = Decimal("0.20")
+    commissioning_warn_fee_unverified_rate: Decimal = Decimal("0.20")
+    commissioning_fail_fee_unverified_rate: Decimal = Decimal("0.40")
+    commissioning_warn_balance_unverified_rate: Decimal = Decimal("0.20")
+    commissioning_fail_balance_unverified_rate: Decimal = Decimal("0.40")
+    commissioning_warn_quote_mismatch_rate: Decimal = Decimal("0.10")
+    commissioning_fail_quote_mismatch_rate: Decimal = Decimal("0.20")
+
     # Fee fallback (bps)
     bybit_maker_fee_bps_fallback: int = 10
     bybit_taker_fee_bps_fallback: int = 15

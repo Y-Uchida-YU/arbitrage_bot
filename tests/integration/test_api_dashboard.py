@@ -13,6 +13,7 @@ def _boot_client(
     live_enabled: bool = False,
     use_mock_market_data: bool = True,
     auto_create_schema: bool = True,
+    extra_env: dict[str, str] | None = None,
 ) -> TestClient:
     db_path = tmp_path / "test_app.db"
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
@@ -26,6 +27,9 @@ def _boot_client(
     os.environ["HEALTH_POLL_INTERVAL_SECONDS"] = "0.5"
     os.environ["LIVE_MIN_EDGE_PERSIST_SECONDS"] = "0"
     os.environ["SHADOW_MIN_EDGE_PERSIST_SECONDS"] = "0"
+    if extra_env:
+        for key, value in extra_env.items():
+            os.environ[key] = value
 
     from app.config.settings import get_settings
 
@@ -472,3 +476,94 @@ def test_shadow_route_can_be_yellow_not_forced_red(tmp_path: Path) -> None:
             time.sleep(0.25)
 
         assert found_yellow
+
+
+def test_commissioning_endpoints_and_dashboard_sections(tmp_path: Path) -> None:
+    with _boot_client(tmp_path, live_enabled=False, use_mock_market_data=True) as client:
+        time.sleep(1.8)
+
+        summary = client.get("/api/commissioning/summary")
+        assert summary.status_code == 200
+        summary_body = summary.json()
+        assert "total_routes" in summary_body
+        assert "latest_backtest_mode" in summary_body
+        assert "routes_promotion_blocked" in summary_body
+
+        routes = client.get("/api/commissioning/routes")
+        assert routes.status_code == 200
+        rows = routes.json()
+        assert isinstance(rows, list)
+        assert len(rows) >= 1
+        row = rows[0]
+        assert "phase" in row
+        assert "promotion_gate_status" in row
+        assert "kpi_evaluations" in row
+        assert isinstance(row["kpi_evaluations"], list)
+
+        detail = client.get(f"/api/commissioning/routes/{row['route_id']}")
+        assert detail.status_code == 200
+        assert detail.json()["route_id"] == row["route_id"]
+
+        dashboard = client.get("/")
+        assert dashboard.status_code == 200
+        assert "Commissioning Summary" in dashboard.text
+        assert "Commissioning Route Gates" in dashboard.text
+        assert "Promotion Gate Distribution" in dashboard.text
+
+
+def test_commissioning_mixed_route_types_use_different_thresholds(tmp_path: Path) -> None:
+    extra_env = {
+        "COMMISSIONING_SHADOW_MIN_OBSERVATION_DAYS": "0",
+        "COMMISSIONING_SHADOW_MIN_MARKET_SNAPSHOTS": "1",
+        "COMMISSIONING_SHADOW_MIN_OPPORTUNITIES": "1",
+        "COMMISSIONING_SHADOW_MIN_BACKTEST_RUNS_TOTAL": "1",
+        "COMMISSIONING_SHADOW_MAX_QUOTE_UNAVAILABLE_RATE": "0.20",
+        "COMMISSIONING_LIVE_MIN_OBSERVATION_DAYS": "14",
+        "COMMISSIONING_LIVE_MIN_MARKET_SNAPSHOTS": "5000",
+        "COMMISSIONING_LIVE_MIN_OPPORTUNITIES": "300",
+    }
+    with _boot_client(
+        tmp_path,
+        live_enabled=False,
+        use_mock_market_data=True,
+        extra_env=extra_env,
+    ) as client:
+        time.sleep(2.0)
+        route_rows = client.get("/api/routes").json()
+        shadow_candidates = [row for row in route_rows if row["strategy"] == "base_virtual_shadow"]
+        assert shadow_candidates
+        shadow = shadow_candidates[0]
+
+        now = datetime.now(timezone.utc)
+        run = client.post(
+            "/api/backtest/run",
+            json={
+                "token": "test-control-token",
+                "strategy": shadow["strategy"],
+                "route_id": shadow["id"],
+                "pair": shadow["pair"],
+                "start_ts": (now - timedelta(hours=1)).isoformat(),
+                "end_ts": (now + timedelta(minutes=1)).isoformat(),
+                "notes": "commissioning mixed threshold test",
+                "replay_mode": "opportunities",
+            },
+        )
+        assert run.status_code == 200
+        assert run.json()["status"] == "completed"
+
+        found_shadow_ready = False
+        found_live_blocked = False
+        for _ in range(80):
+            rows = client.get("/api/commissioning/routes").json()
+            shadow_row = next((row for row in rows if row["route_id"] == shadow["id"]), None)
+            live_rows = [row for row in rows if row["strategy"] == "hyperevm_dex_dex"]
+            if shadow_row and shadow_row["promotion_gate_status"] == "observation_ready":
+                found_shadow_ready = True
+            if any(row["promotion_gate_status"] == "promotion_blocked" for row in live_rows):
+                found_live_blocked = True
+            if found_shadow_ready and found_live_blocked:
+                break
+            time.sleep(0.2)
+
+        assert found_shadow_ready
+        assert found_live_blocked

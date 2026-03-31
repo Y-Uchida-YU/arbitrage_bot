@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.alerts.service import AlertService
 from app.backtest.engine import BacktestEngine
+from app.commissioning.service import CommissioningService
 from app.config.settings import Settings
 from app.contracts.client import ArbExecutorClient
 from app.exchanges.factory import build_cex_adapters, build_hyperevm_dex_adapters, build_shadow_dex_adapters
@@ -30,6 +31,7 @@ class AppState:
     health_collector: HealthCollector
     backtest_engine: BacktestEngine
     readiness_service: ReadinessService
+    commissioning_service: CommissioningService
     runner: BotRunner
 
 
@@ -39,6 +41,7 @@ def build_app_state(settings: Settings, session_factory: async_sessionmaker) -> 
     health_collector = HealthCollector()
     backtest_engine = BacktestEngine(settings)
     readiness_service = ReadinessService(settings)
+    commissioning_service = CommissioningService(settings, readiness_service)
 
     edge = ModeledEdgeCalculator(settings)
     hyper_dex = build_hyperevm_dex_adapters(settings)
@@ -73,5 +76,6 @@ def build_app_state(settings: Settings, session_factory: async_sessionmaker) -> 
         health_collector=health_collector,
         backtest_engine=backtest_engine,
         readiness_service=readiness_service,
+        commissioning_service=commissioning_service,
         runner=runner,
     )

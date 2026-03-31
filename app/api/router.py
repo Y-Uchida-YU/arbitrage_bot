@@ -15,6 +15,8 @@ from app.api.schemas import (
     BacktestRunOut,
     BacktestRunRequest,
     BacktestTradeOut,
+    CommissioningRouteOut,
+    CommissioningSummaryOut,
     CooldownOut,
     ControlRequest,
     CooldownControlRequest,
@@ -216,6 +218,8 @@ async def overview(
     data["venue_quote_health"] = [asdict(item) for item in state.health_collector.venue_quote_health()]
     readiness_summary = await state.readiness_service.readiness_summary(repo)
     data["readiness_summary"] = readiness_summary
+    commissioning_summary = await state.commissioning_service.commissioning_summary(repo)
+    data["commissioning_summary"] = commissioning_summary
     latest_health_rows = await repo.list_latest_route_health_snapshots()
     fee_distribution: dict[str, int] = {}
     balance_distribution: dict[str, int] = {}
@@ -457,6 +461,43 @@ async def readiness_summary(
     repo = Repository(session)
     summary = await state.readiness_service.readiness_summary(repo)
     return ReadinessSummaryOut.model_validate(summary)
+
+
+@router.get("/commissioning/routes", response_model=list[CommissioningRouteOut])
+async def commissioning_routes(
+    request: Request,
+    route_id: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_async_session),
+) -> list[CommissioningRouteOut]:
+    state = get_state(request)
+    repo = Repository(session)
+    rows = await state.commissioning_service.commissioning_route_rows(repo, route_id=route_id)
+    return [CommissioningRouteOut.model_validate(row) for row in rows]
+
+
+@router.get("/commissioning/routes/{route_id}", response_model=CommissioningRouteOut)
+async def commissioning_route_detail(
+    route_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+) -> CommissioningRouteOut:
+    state = get_state(request)
+    repo = Repository(session)
+    rows = await state.commissioning_service.commissioning_route_rows(repo, route_id=route_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail="commissioning route not found")
+    return CommissioningRouteOut.model_validate(rows[0])
+
+
+@router.get("/commissioning/summary", response_model=CommissioningSummaryOut)
+async def commissioning_summary(
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+) -> CommissioningSummaryOut:
+    state = get_state(request)
+    repo = Repository(session)
+    summary = await state.commissioning_service.commissioning_summary(repo)
+    return CommissioningSummaryOut.model_validate(summary)
 
 
 @router.get("/blocked-reason-summary")

@@ -293,3 +293,56 @@ class ReadinessSummaryOut(BaseModel):
     green_count: int
     total_routes: int
     latest_backtest_mode: str
+
+
+class KpiEvaluationOut(BaseModel):
+    name: str
+    status: str
+    value: str
+    threshold: str
+    critical: bool
+    note: str = ""
+
+
+class CommissioningRouteOut(BaseModel):
+    route_id: str
+    strategy: str
+    route_type: str
+    phase: str
+    readiness_grade: str
+    promotion_gate_status: str
+    observation_window_days: Decimal
+    market_snapshot_count: int
+    opportunity_count: int
+    quote_unavailable_rate: Decimal
+    health_unknown_rate: Decimal
+    fee_unverified_rate: Decimal
+    balance_unverified_rate: Decimal
+    quote_mismatch_rate: Decimal
+    backtest_run_count_total: int
+    backtest_run_count_market_snapshots: int
+    backtest_run_count_opportunities: int
+    fatal_pause_count: int
+    cooldown_event_count: int
+    blocked_reason_top_n: list[dict[str, object]]
+    latest_backtest_pnl: Decimal
+    median_backtest_pnl: Decimal
+    worst_backtest_drawdown: Decimal
+    latest_readiness_grade: str
+    kpi_evaluations: list[KpiEvaluationOut]
+    gate_blockers: list[str]
+    human_action_items: list[str]
+
+
+class CommissioningSummaryOut(BaseModel):
+    total_routes: int
+    routes_not_ready: int
+    routes_observation_ready: int
+    routes_review_ready: int
+    routes_promotion_blocked: int
+    live_intent_routes: int
+    shadow_routes: int
+    latest_backtest_mode: str
+    phase_counts: dict[str, int]
+    gate_fail_route_count: int
+    gate_warn_route_count: int

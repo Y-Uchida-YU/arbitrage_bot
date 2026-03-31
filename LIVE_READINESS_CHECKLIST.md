@@ -17,7 +17,7 @@ Use this checklist before any decision to enable real submit path.
 - [ ] Critical health fields are observation-based, not fixed true.
 - [ ] Unknown health states are fail-safe blocked.
 - [ ] Stale health snapshots trigger blocking.
-- [ ] quote_unavailable venues are visible and tracked.
+- [ ] `quote_unavailable` venues are visible and tracked.
 - [ ] Fee confidence below live threshold blocks (`fee_unverified`).
 - [ ] Balance confidence below live threshold blocks (`balance_unverified`).
 - [ ] Quote match status below live threshold blocks (`quote_mismatch`).
@@ -41,20 +41,25 @@ Use this checklist before any decision to enable real submit path.
 - [ ] Backtest runs/results/trades are persisted.
 - [ ] Parameter set rationale is documented.
 - [ ] Replay/backtest covers enough historical windows.
-- [ ] Both replay modes are reviewed (`opportunities` and `market_snapshots`).
+- [ ] Both replay modes are reviewed (`opportunities`, `market_snapshots`).
 - [ ] Drawdown/worst-sequence metrics are reviewed.
 
-## Route/Venue Readiness
+## Promotion Gate Evidence
 
-- [ ] Route-by-route supported/unsupported status is documented.
-- [ ] Fee-known / quote-match / balance-match status is visible per route.
-- [ ] Readiness logic is strategy-aware: live-intent routes stay strict, shadow routes use observation thresholds.
-- [ ] Depeg, gas spike, RPC failure, liquidity deterioration guards are validated.
-- [ ] Readiness API and dashboard blockers are explainable for each non-green route.
+- [ ] Route-level commissioning endpoints are populated:
+  - `/api/commissioning/summary`
+  - `/api/commissioning/routes`
+  - `/api/commissioning/routes/{route_id}`
+- [ ] Route type thresholds are met:
+  - live-intent (`hyperevm_dex_dex`)
+  - shadow observation (`base_virtual_shadow`)
+- [ ] KPI evaluations (`pass/warn/fail`) are explainable for every non-ready route.
+- [ ] `promotion_gate_status` is not `promotion_blocked` for promotion candidates.
+- [ ] Shadow route `observation_ready` is treated as observation-only, not live approval.
 
 ## Final Gate
 
 - [ ] Dry-run remains stable with no unexplained fatal pauses.
 - [ ] Human review sign-off is completed.
-- [ ] Even with `green`, live submit remains disabled until explicit human approval.
-- [ ] Real submit path is still disabled by default and requires explicit approval to change.
+- [ ] Even with readiness `green` or gate `review_ready`, live submit remains disabled until explicit approval.
+- [ ] Real submit path is still disabled by default and requires explicit manual change.

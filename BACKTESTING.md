@@ -124,6 +124,15 @@ Key outputs include:
 - balance confidence distribution
 - penalty totals
 
+## Commissioning Integration
+
+Backtest outputs feed commissioning gate checks.
+
+- Hyper live-intent route requires both replay modes (`market_snapshots` and `opportunities`) with minimum run counts.
+- Shadow route requires minimum total replay runs for observation readiness.
+- `latest_backtest_mode` is derived from latest stored backtest run/result metadata.
+- Promotion gate still does not enable live submit automatically.
+
 ## Interpretation Guidelines
 
 - Prefer stability and explainability over peak simulated PnL.
