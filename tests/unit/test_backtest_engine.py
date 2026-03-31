@@ -265,3 +265,86 @@ async def test_market_snapshot_replay_mode_runs() -> None:
         assert int(result["signals"]) >= 1
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_market_snapshot_replay_normalizes_legacy_statuses() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = Settings()
+    bt = BacktestEngine(settings)
+
+    async with session_factory() as session:
+        repo = Repository(session)
+        await repo.seed_defaults()
+        route = (await repo.get_routes(strategy="hyperevm_dex_dex", enabled_only=False))[0]
+        now = datetime.now(timezone.utc)
+
+        await repo.insert_route_health_snapshot(
+            strategy=route.strategy,
+            route_id=route.id,
+            pair=route.pair,
+            rpc_latency_ms=Decimal("1"),
+            rpc_error_rate_5m=Decimal("0"),
+            db_latency_ms=Decimal("1"),
+            quote_latency_ms=Decimal("1"),
+            market_data_staleness_seconds=Decimal("1"),
+            contract_revert_rate=Decimal("0"),
+            alert_send_success_rate=Decimal("1"),
+            fee_known_status="good",
+            quote_match_status="good",
+            balance_match_status="good",
+            support_status="bad",
+            cooldown_active=False,
+            paused=False,
+            metadata_json="{}",
+        )
+
+        metadata = json.dumps(
+            {
+                "initial_amount": "100",
+                "final_amount": "100.8",
+                "fee_known_status": "true",
+                "balance_match_status": "true",
+                "quote_match_status": "true",
+                "quote_unavailable": "false",
+                "smaller_pool_liquidity_usdc": "500000",
+            },
+            sort_keys=True,
+        )
+        await repo.insert_market_snapshot(
+            strategy=route.strategy,
+            route_id=route.id,
+            pair=route.pair,
+            venue=route.venue_b,
+            context="leg_b",
+            bid=Decimal("0"),
+            ask=Decimal("0"),
+            amount_in=Decimal("100.4"),
+            quoted_amount_out=Decimal("100.8"),
+            liquidity_usd=Decimal("500000"),
+            gas_gwei=Decimal("0.05"),
+            quote_age_seconds=Decimal("1"),
+            source_type="real",
+            metadata_json=metadata,
+        )
+
+        result = await bt.run(
+            repo,
+            strategy=route.strategy,
+            route_id=route.id,
+            pair=route.pair,
+            start_ts=now - timedelta(minutes=5),
+            end_ts=now + timedelta(minutes=5),
+            parameter_set_id=None,
+            notes="legacy status normalization",
+            replay_mode="market_snapshots",
+        )
+        assert result["status"] == "completed"
+        assert int(result["blocked_count"]) >= 1
+        assert result["blocked_reasons"].get("quote_unavailable", 0) >= 1
+
+    await engine.dispose()

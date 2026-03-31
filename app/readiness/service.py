@@ -12,6 +12,7 @@ from app.utils.confidence import (
     normalize_balance_confidence,
     normalize_fee_confidence,
     normalize_quote_match_status,
+    normalize_support_status,
 )
 
 
@@ -62,7 +63,7 @@ class ReadinessService:
         opp_stats = await repo.opportunity_stats_for_route(route.id)
         backtest_stats = await repo.backtest_stats_for_route(route.id)
 
-        support_status = str(getattr(latest_health, "support_status", "unknown")).strip().lower()
+        support_status = normalize_support_status(getattr(latest_health, "support_status", "unknown"))
         fee_status = normalize_fee_confidence(getattr(latest_health, "fee_known_status", "unknown"))
         balance_status = normalize_balance_confidence(getattr(latest_health, "balance_match_status", "unknown"))
         quote_match_status = normalize_quote_match_status(getattr(latest_health, "quote_match_status", "unknown"))

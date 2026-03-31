@@ -13,6 +13,7 @@ from app.utils.confidence import (
     normalize_balance_confidence,
     normalize_fee_confidence,
     normalize_quote_match_status,
+    normalize_support_status,
 )
 
 
@@ -343,11 +344,18 @@ class BacktestEngine:
             slippage_bps = Decimal(str(payload.get("expected_slippage_bps", default_slippage)))
             quote_age = Decimal(row.quote_age_seconds)
             smaller_liq = Decimal(str(payload.get("smaller_pool_liquidity_usdc", row.liquidity_usd)))
-            fee_status = normalize_fee_confidence(payload.get("fee_known_status"))
-            balance_status = normalize_balance_confidence(payload.get("balance_match_status"))
+            fee_status = normalize_fee_confidence(
+                payload.get("fee_known_status"),
+                provenance_hint=payload.get("fee_provenance") or payload.get("fee_source"),
+            )
+            balance_status = normalize_balance_confidence(
+                payload.get("balance_match_status"),
+                evidence_hint=payload.get("balance_failure_reason"),
+            )
             quote_match_status = normalize_quote_match_status(payload.get("quote_match_status"))
             quote_unavailable = str(payload.get("quote_unavailable", "false")).lower() == "true"
             balance_failure_reason = str(payload.get("balance_failure_reason", "")).strip().lower()
+            support_status = normalize_support_status(payload.get("support_status"))
 
             if current_health is not None:
                 if fee_status == "unknown":
@@ -356,16 +364,21 @@ class BacktestEngine:
                     balance_status = normalize_balance_confidence(current_health.balance_match_status)
                 if quote_match_status == "unknown":
                     quote_match_status = normalize_quote_match_status(current_health.quote_match_status)
-                support_status = str(current_health.support_status).lower()
-            else:
-                support_status = "unknown"
+                health_support = normalize_support_status(current_health.support_status)
+                if health_support != "unknown" or support_status == "unknown":
+                    support_status = health_support
+
+            if quote_unavailable and support_status == "unknown":
+                support_status = "unsupported"
 
             fee_distribution[fee_status] = fee_distribution.get(fee_status, 0) + 1
             balance_distribution[balance_status] = balance_distribution.get(balance_status, 0) + 1
 
             blocked_reason = ""
-            if quote_unavailable or support_status in {"unsupported", "unknown"}:
+            if quote_unavailable or support_status == "unsupported":
                 blocked_reason = "quote_unavailable"
+            elif support_status == "unknown":
+                blocked_reason = "health_unknown"
             elif fee_status == "unknown":
                 blocked_reason = "fee_unknown"
             elif not fee_confidence_at_least(fee_status, str(params.get("min_fee_confidence_status", "fallback_only"))):
@@ -505,19 +518,32 @@ class BacktestEngine:
         liquidity_cap_ratio: Decimal,
         params: dict[str, object],
     ) -> tuple[str, str, str, bool]:
-        fee_status = normalize_fee_confidence(payload.get("fee_known_status"))
+        fee_status = normalize_fee_confidence(
+            payload.get("fee_known_status"),
+            provenance_hint=payload.get("fee_provenance") or payload.get("fee_source"),
+        )
         if fee_status == "unknown":
             fee_known_raw = str(payload.get("fee_known", "unknown")).lower()
             if fee_known_raw == "true":
                 fee_status = "config_only"
             elif fee_known_raw == "false":
                 fee_status = "unknown"
-        balance_status = normalize_balance_confidence(payload.get("balance_match_status"))
+        balance_status = normalize_balance_confidence(
+            payload.get("balance_match_status"),
+            evidence_hint=payload.get("balance_failure_reason"),
+        )
         quote_match_status = normalize_quote_match_status(payload.get("quote_match_status"))
+        support_status = normalize_support_status(payload.get("support_status"))
         if quote_match_status == "unknown":
             quote_match_status = normalize_quote_match_status(payload.get("quote_match"))
-        if str(payload.get("quote_unavailable", "false")).lower() == "true":
+        quote_unavailable = str(payload.get("quote_unavailable", "false")).lower() == "true"
+        if support_status == "unknown" and not quote_unavailable:
+            # Opportunities replay is legacy-friendly; quote_unavailable=false historically implied supported route.
+            support_status = "supported"
+        if quote_unavailable or support_status == "unsupported":
             return "quote_unavailable", fee_status, balance_status, True
+        if support_status == "unknown":
+            return "health_unknown", fee_status, balance_status, True
         if fee_status == "unknown":
             return "fee_unknown", fee_status, balance_status, True
         if not fee_confidence_at_least(fee_status, str(params.get("min_fee_confidence_status", "fallback_only"))):

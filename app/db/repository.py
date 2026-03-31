@@ -30,6 +30,12 @@ from app.models.core import (
     TradeAttempt,
 )
 from app.quote_engine.types import RouteQuote
+from app.utils.confidence import (
+    normalize_balance_confidence,
+    normalize_fee_confidence,
+    normalize_quote_match_status,
+    normalize_support_status,
+)
 from app.utils.ids import new_idempotency_key, new_run_id
 
 
@@ -647,7 +653,10 @@ class Repository:
         if route_id:
             query = query.where(RouteHealthSnapshot.route_id == route_id)
         rows = await self.session.scalars(query.order_by(RouteHealthSnapshot.timestamp.desc()).limit(limit))
-        return list(rows)
+        output = list(rows)
+        for row in output:
+            self._canonicalize_route_health_row(row)
+        return output
 
     async def list_route_health_snapshots_for_backtest(
         self,
@@ -666,7 +675,10 @@ class Repository:
             .order_by(RouteHealthSnapshot.timestamp.asc())
             .limit(limit)
         )
-        return list(rows)
+        output = list(rows)
+        for row in output:
+            self._canonicalize_route_health_row(row)
+        return output
 
     async def market_snapshot_stats_for_route(self, route_id: str) -> dict[str, object]:
         count_value = await self.session.scalar(
@@ -859,6 +871,12 @@ class Repository:
         paused: bool,
         metadata_json: str = "{}",
     ) -> RouteHealthSnapshot:
+        fee_status, quote_status, balance_status, support = self._canonicalize_route_health_statuses(
+            fee_known_status=fee_known_status,
+            quote_match_status=quote_match_status,
+            balance_match_status=balance_match_status,
+            support_status=support_status,
+        )
         row = RouteHealthSnapshot(
             run_id=new_run_id(),
             strategy=strategy,
@@ -871,10 +889,10 @@ class Repository:
             market_data_staleness_seconds=market_data_staleness_seconds,
             contract_revert_rate=contract_revert_rate,
             alert_send_success_rate=alert_send_success_rate,
-            fee_known_status=fee_known_status,
-            quote_match_status=quote_match_status,
-            balance_match_status=balance_match_status,
-            support_status=support_status,
+            fee_known_status=fee_status,
+            quote_match_status=quote_status,
+            balance_match_status=balance_status,
+            support_status=support,
             cooldown_active=cooldown_active,
             paused=paused,
             metadata_json=metadata_json,
@@ -882,15 +900,19 @@ class Repository:
         self.session.add(row)
         await self.session.commit()
         await self.session.refresh(row)
+        self._canonicalize_route_health_row(row)
         return row
 
     async def latest_route_health_snapshot(self, route_id: str) -> RouteHealthSnapshot | None:
-        return await self.session.scalar(
+        row = await self.session.scalar(
             select(RouteHealthSnapshot)
             .where(RouteHealthSnapshot.route_id == route_id)
             .order_by(RouteHealthSnapshot.timestamp.desc())
             .limit(1)
         )
+        if row is not None:
+            self._canonicalize_route_health_row(row)
+        return row
 
     async def list_latest_route_health_snapshots(self) -> list[RouteHealthSnapshot]:
         rows = list(
@@ -901,6 +923,7 @@ class Repository:
         latest_by_route: dict[str, RouteHealthSnapshot] = {}
         for row in rows:
             if row.route_id not in latest_by_route:
+                self._canonicalize_route_health_row(row)
                 latest_by_route[row.route_id] = row
         return list(latest_by_route.values())
 
@@ -1076,6 +1099,33 @@ class Repository:
             )
         )
         await self.session.commit()
+
+    @staticmethod
+    def _canonicalize_route_health_statuses(
+        *,
+        fee_known_status: str,
+        quote_match_status: str,
+        balance_match_status: str,
+        support_status: str,
+    ) -> tuple[str, str, str, str]:
+        return (
+            normalize_fee_confidence(fee_known_status),
+            normalize_quote_match_status(quote_match_status),
+            normalize_balance_confidence(balance_match_status),
+            normalize_support_status(support_status),
+        )
+
+    def _canonicalize_route_health_row(self, row: RouteHealthSnapshot) -> None:
+        fee_status, quote_status, balance_status, support = self._canonicalize_route_health_statuses(
+            fee_known_status=row.fee_known_status,
+            quote_match_status=row.quote_match_status,
+            balance_match_status=row.balance_match_status,
+            support_status=row.support_status,
+        )
+        row.fee_known_status = fee_status
+        row.quote_match_status = quote_status
+        row.balance_match_status = balance_status
+        row.support_status = support
 
     async def overview(self) -> dict[str, object]:
         ctrl = await self.get_runtime_control()

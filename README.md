@@ -153,12 +153,18 @@ python -m app.main backtest \
   --replay-mode market_snapshots
 ```
 
-## Fee / Balance Confidence
+## Canonical Status Vocabulary
 
-- Fee confidence (`fee_known_status`) is explicit and conservative:
+- Support status (`support_status`) canonical values:
+  - `supported` / `unsupported` / `unknown`
+- Fee confidence (`fee_known_status`) canonical values:
   - `unknown` / `fallback_only` / `config_only` / `venue_declared` / `acct_verified` / `chain_verified`
-- Balance confidence (`balance_match_status`) is explicit and conservative:
+- Balance confidence (`balance_match_status`) canonical values:
   - `unknown` / `mismatch` / `internal_ok` / `db_inventory_ok` / `wallet_verified` / `venue_verified`
+- Quote match status (`quote_match_status`) canonical values:
+  - `unknown` / `mismatch` / `matched`
+
+- Legacy values (`good/bad/true/false/1/0/yes/no`) are normalized to canonical values at read/write paths.
 - Unknown or unverified confidence is blocked for tradability and surfaced in readiness blockers.
 - `green` readiness grade is still not permission to enable live submit; human review remains mandatory.
 
@@ -185,6 +191,7 @@ High-impact variables:
 - `HEALTH_SNAPSHOT_STALE_SECONDS`
 - `LIVE_MIN_FEE_CONFIDENCE_STATUS`
 - `LIVE_MIN_BALANCE_CONFIDENCE_STATUS`
+- `LIVE_MIN_QUOTE_MATCH_STATUS`
 - `BALANCE_VERIFY_TOLERANCE_ABS`
 - `BALANCE_VERIFY_TOLERANCE_RATIO`
 - `HYPEREVM_WALLET_ADDRESS`

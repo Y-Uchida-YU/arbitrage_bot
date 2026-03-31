@@ -13,6 +13,7 @@ from app.utils.confidence import (
     normalize_balance_confidence,
     normalize_fee_confidence,
     normalize_quote_match_status,
+    quote_match_status_at_least,
 )
 
 
@@ -331,7 +332,12 @@ class GlobalRiskManager:
         if not checks["quote_match_known"]:
             return OpportunityDecision(False, "health_unknown", checks)
 
-        checks["quote_match"] = health.quote_match and quote_match_status == "matched"
+        required_quote_status = self.settings.live_min_quote_match_status if mode == RunMode.LIVE else "matched"
+        checks["quote_match_status_verified"] = quote_match_status_at_least(quote_match_status, required_quote_status)
+        if not checks["quote_match_status_verified"]:
+            return OpportunityDecision(False, "quote_mismatch", checks)
+
+        checks["quote_match"] = health.quote_match if required_quote_status == "matched" else True
         if not checks["quote_match"]:
             return OpportunityDecision(False, "quote_mismatch", checks)
 

@@ -39,6 +39,12 @@ from app.app_state import AppState
 from app.config.settings import RunMode
 from app.db.repository import Repository
 from app.db.session import get_async_session
+from app.utils.confidence import (
+    normalize_balance_confidence,
+    normalize_fee_confidence,
+    normalize_quote_match_status,
+    normalize_support_status,
+)
 from app.utils.metrics import metrics_store
 from app.utils.replay import ReplayEngine
 
@@ -85,6 +91,51 @@ def _to_backtest_result_out(row: object) -> BacktestResultOut:
         blocked_reason_json=getattr(row, "blocked_reason_json"),
         metadata_json=getattr(row, "metadata_json"),
         created_at=getattr(row, "created_at"),
+    )
+
+
+def _canonical_route_health_payload(
+    *,
+    fee_known_status: object,
+    quote_match_status: object,
+    balance_match_status: object,
+    support_status: object,
+) -> dict[str, str]:
+    return {
+        "fee_known_status": normalize_fee_confidence(str(fee_known_status)),
+        "quote_match_status": normalize_quote_match_status(str(quote_match_status)),
+        "balance_match_status": normalize_balance_confidence(str(balance_match_status)),
+        "support_status": normalize_support_status(str(support_status)),
+    }
+
+
+def _to_route_health_snapshot_out(row: object) -> RouteHealthSnapshotOut:
+    statuses = _canonical_route_health_payload(
+        fee_known_status=getattr(row, "fee_known_status", "unknown"),
+        quote_match_status=getattr(row, "quote_match_status", "unknown"),
+        balance_match_status=getattr(row, "balance_match_status", "unknown"),
+        support_status=getattr(row, "support_status", "unknown"),
+    )
+    return RouteHealthSnapshotOut(
+        id=getattr(row, "id"),
+        timestamp=getattr(row, "timestamp"),
+        strategy=getattr(row, "strategy"),
+        route_id=getattr(row, "route_id"),
+        pair=getattr(row, "pair"),
+        rpc_latency_ms=getattr(row, "rpc_latency_ms"),
+        rpc_error_rate_5m=getattr(row, "rpc_error_rate_5m"),
+        db_latency_ms=getattr(row, "db_latency_ms"),
+        quote_latency_ms=getattr(row, "quote_latency_ms"),
+        market_data_staleness_seconds=getattr(row, "market_data_staleness_seconds"),
+        contract_revert_rate=getattr(row, "contract_revert_rate"),
+        alert_send_success_rate=getattr(row, "alert_send_success_rate"),
+        fee_known_status=statuses["fee_known_status"],
+        quote_match_status=statuses["quote_match_status"],
+        balance_match_status=statuses["balance_match_status"],
+        support_status=statuses["support_status"],
+        cooldown_active=getattr(row, "cooldown_active"),
+        paused=getattr(row, "paused"),
+        metadata_json=getattr(row, "metadata_json"),
     )
 
 
@@ -169,8 +220,10 @@ async def overview(
     fee_distribution: dict[str, int] = {}
     balance_distribution: dict[str, int] = {}
     for row in latest_health_rows:
-        fee_distribution[row.fee_known_status] = fee_distribution.get(row.fee_known_status, 0) + 1
-        balance_distribution[row.balance_match_status] = balance_distribution.get(row.balance_match_status, 0) + 1
+        fee_status = normalize_fee_confidence(row.fee_known_status)
+        balance_status = normalize_balance_confidence(row.balance_match_status)
+        fee_distribution[fee_status] = fee_distribution.get(fee_status, 0) + 1
+        balance_distribution[balance_status] = balance_distribution.get(balance_status, 0) + 1
     data["fee_confidence_distribution"] = fee_distribution
     data["balance_confidence_distribution"] = balance_distribution
     return data
@@ -301,7 +354,7 @@ async def route_health_snapshots(
 ) -> list[RouteHealthSnapshotOut]:
     repo = Repository(session)
     rows = await repo.list_route_health_snapshots(route_id=route_id, limit=limit)
-    return [RouteHealthSnapshotOut.model_validate(x, from_attributes=True) for x in rows]
+    return [_to_route_health_snapshot_out(x) for x in rows]
 
 
 @router.get("/routes", response_model=list[RouteOut])
@@ -349,14 +402,18 @@ async def route_health(
                 "health_snapshot": asdict(state.health_collector.build_snapshot(route.id)),
                 "persisted_runtime_state": persisted_state,
                 "persisted_health": (
-                    {
-                        "fee_known_status": latest_health.fee_known_status,
-                        "quote_match_status": latest_health.quote_match_status,
-                        "balance_match_status": latest_health.balance_match_status,
-                        "support_status": latest_health.support_status,
-                        "cooldown_active": latest_health.cooldown_active,
-                        "paused": latest_health.paused,
-                    }
+                    (
+                        _canonical_route_health_payload(
+                            fee_known_status=latest_health.fee_known_status,
+                            quote_match_status=latest_health.quote_match_status,
+                            balance_match_status=latest_health.balance_match_status,
+                            support_status=latest_health.support_status,
+                        )
+                        | {
+                            "cooldown_active": latest_health.cooldown_active,
+                            "paused": latest_health.paused,
+                        }
+                    )
                     if latest_health
                     else None
                 ),

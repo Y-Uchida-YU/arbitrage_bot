@@ -24,6 +24,15 @@ Backtesting is event-driven replay over persisted observations.
   - Reconstructs route events from raw-ish observation rows (`leg_b` snapshots + latest route health state).
   - Better for commissioning truthfulness checks and readiness scoring.
 
+## Canonical Status Handling
+
+- Replay logic uses canonical status vocabulary only:
+  - `support_status`: `supported/unsupported/unknown`
+  - `fee_known_status`: `unknown/fallback_only/config_only/venue_declared/acct_verified/chain_verified`
+  - `balance_match_status`: `unknown/mismatch/internal_ok/db_inventory_ok/wallet_verified/venue_verified`
+  - `quote_match_status`: `unknown/mismatch/matched`
+- Legacy values (`good/bad/true/false`) are normalized conservatively before scoring.
+
 ## Conservative Fill Model
 
 Replay uses conservative assumptions and does not model optimistic fills.

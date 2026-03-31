@@ -26,6 +26,7 @@ from app.utils.confidence import (
     normalize_balance_confidence,
     normalize_fee_confidence,
     normalize_quote_match_status,
+    normalize_support_status,
 )
 from app.utils.logging import enrich_log_kwargs
 from app.utils.metrics import metrics_store
@@ -230,11 +231,7 @@ class BotRunner:
                             int(route_state.get("cooldown_remaining_seconds", 0)) > 0
                         ).lower()
                         quote.metadata["health_age_seconds"] = str(health.health_age_seconds)
-                        quote.metadata["support_status"] = (
-                            "unsupported"
-                            if quote.metadata.get("quote_unavailable", "false").lower() == "true"
-                            else "supported"
-                        )
+                        quote.metadata["support_status"] = self._derive_support_status(quote)
 
                         status = "eligible" if decision.tradable else "blocked"
                         opp = await repo.insert_opportunity(
@@ -636,7 +633,9 @@ class BotRunner:
             quote.metadata.get("balance_match_status") or health.balance_match_status
         )
         quote_unavailable_raw = quote.metadata.get("quote_unavailable", "false").lower()
-        support_status = "unsupported" if quote_unavailable_raw == "true" else "supported"
+        support_status = normalize_support_status(quote.metadata.get("support_status"))
+        if support_status == "unknown":
+            support_status = "unsupported" if quote_unavailable_raw == "true" else self._derive_support_status(quote)
         await repo.insert_route_health_snapshot(
             strategy=route.strategy,
             route_id=route.id,
@@ -688,7 +687,8 @@ class BotRunner:
                 "pool_health": "false",
                 "quote_unavailable": "true",
                 "quote_unavailable_reason": reason,
-                "fee_known": "unknown",
+                "support_status": "unsupported",
+                "fee_known": "false",
                 "fee_known_status": "unknown",
                 "fee_provenance": "unavailable",
                 "quote_match": "unknown",
@@ -711,6 +711,18 @@ class BotRunner:
             return "good" if client.validate_chain() else "bad"
         except Exception:
             return "bad"
+
+    def _derive_support_status(self, quote: RouteQuote) -> str:
+        status = normalize_support_status(quote.metadata.get("support_status"))
+        quote_unavailable = str(quote.metadata.get("quote_unavailable", "false")).lower() in {"true", "1", "yes"}
+        if quote_unavailable:
+            return "unsupported"
+        if status != "unknown":
+            return status
+        quote_source = str(quote.metadata.get("quote_source", "")).strip().lower()
+        if quote_source in {"mock", "real"}:
+            return "supported"
+        return "unknown"
 
     async def _probe_wallet_usdc_balance(self) -> Decimal | None:
         wallet = self.settings.hyperevm_wallet_address.strip()

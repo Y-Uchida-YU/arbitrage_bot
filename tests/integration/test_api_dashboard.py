@@ -325,3 +325,43 @@ def test_schema_guard_requires_flag_when_missing_schema(tmp_path: Path) -> None:
             assert False, "startup should fail when schema is missing and AUTO_CREATE_SCHEMA=false"
     except RuntimeError:
         assert True
+
+
+def test_route_health_and_readiness_return_canonical_statuses(tmp_path: Path) -> None:
+    support_allowed = {"supported", "unsupported", "unknown"}
+    fee_allowed = {"unknown", "fallback_only", "config_only", "venue_declared", "acct_verified", "chain_verified"}
+    balance_allowed = {"unknown", "mismatch", "internal_ok", "db_inventory_ok", "wallet_verified", "venue_verified"}
+    quote_allowed = {"unknown", "mismatch", "matched"}
+
+    with _boot_client(tmp_path, live_enabled=False, use_mock_market_data=True) as client:
+        time.sleep(1.2)
+
+        health = client.get("/api/route-health-snapshots")
+        assert health.status_code == 200
+        rows = health.json()
+        assert isinstance(rows, list)
+        if not rows:
+            for _ in range(12):
+                time.sleep(0.2)
+                health = client.get("/api/route-health-snapshots")
+                assert health.status_code == 200
+                rows = health.json()
+                if rows:
+                    break
+        assert len(rows) >= 1
+        for row in rows:
+            assert row["support_status"] in support_allowed
+            assert row["fee_known_status"] in fee_allowed
+            assert row["balance_match_status"] in balance_allowed
+            assert row["quote_match_status"] in quote_allowed
+
+        readiness = client.get("/api/readiness/routes")
+        assert readiness.status_code == 200
+        readiness_rows = readiness.json()
+        assert isinstance(readiness_rows, list)
+        assert len(readiness_rows) >= 1
+        for row in readiness_rows:
+            assert row["support_status"] in support_allowed
+            assert row["fee_known_status"] in fee_allowed
+            assert row["balance_match_status"] in balance_allowed
+            assert row["quote_match_status"] in quote_allowed

@@ -7,6 +7,7 @@ Use this checklist before any decision to enable real submit path.
 - [ ] Fee-unit responsibility separation is complete (`economic_fee_bps` vs `quoter/pool fee tier`).
 - [ ] `fee_known_status` uses explicit provenance levels (not a bool-only approximation).
 - [ ] `balance_match_status` uses explicit confidence levels (not a bool-only approximation).
+- [ ] `support_status` and `quote_match_status` are canonicalized (`supported/unsupported/unknown`, `matched/mismatch/unknown`).
 - [ ] Live defaults remain conservative (`MODE=paper`, `LIVE_EXECUTION_ENABLED=false`).
 - [ ] Unsupported routes/venues are blocked (`quote_unavailable`) and never forced tradable.
 - [ ] Allowlist/route validation guards remain strict.
@@ -19,6 +20,7 @@ Use this checklist before any decision to enable real submit path.
 - [ ] quote_unavailable venues are visible and tracked.
 - [ ] Fee confidence below live threshold blocks (`fee_unverified`).
 - [ ] Balance confidence below live threshold blocks (`balance_unverified`).
+- [ ] Quote match status below live threshold blocks (`quote_mismatch`).
 
 ## Runtime State Persistence
 

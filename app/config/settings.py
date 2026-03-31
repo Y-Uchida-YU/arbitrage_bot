@@ -124,6 +124,7 @@ class Settings(BaseSettings):
     health_snapshot_stale_seconds: int = 30
     live_min_fee_confidence_status: str = "chain_verified"
     live_min_balance_confidence_status: str = "wallet_verified"
+    live_min_quote_match_status: str = "matched"
     balance_verify_tolerance_abs: Decimal = Decimal("0.01")
     balance_verify_tolerance_ratio: Decimal = Decimal("0.01")
     hyperevm_wallet_address: str = ""
@@ -191,6 +192,15 @@ class Settings(BaseSettings):
         normalized = str(value).strip().lower()
         if normalized not in allowed:
             return "wallet_verified"
+        return normalized
+
+    @field_validator("live_min_quote_match_status", mode="before")
+    @classmethod
+    def _normalize_quote_match_status(cls, value: str) -> str:
+        allowed = {"unknown", "mismatch", "matched"}
+        normalized = str(value).strip().lower()
+        if normalized not in allowed:
+            return "matched"
         return normalized
 
     @property

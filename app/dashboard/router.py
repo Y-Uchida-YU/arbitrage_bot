@@ -14,6 +14,12 @@ from app.app_state import AppState
 from app.db.repository import Repository
 from app.db.session import get_async_session
 from app.models.core import Opportunity
+from app.utils.confidence import (
+    normalize_balance_confidence,
+    normalize_fee_confidence,
+    normalize_quote_match_status,
+    normalize_support_status,
+)
 from app.utils.metrics import metrics_store
 
 router = APIRouter(tags=["dashboard"])
@@ -52,6 +58,30 @@ def _enrich_opportunity_row(row: Opportunity) -> dict[str, object]:
     }
 
 
+def _enrich_route_health_row(row: object) -> dict[str, object]:
+    return {
+        "id": getattr(row, "id"),
+        "timestamp": getattr(row, "timestamp"),
+        "strategy": getattr(row, "strategy"),
+        "route_id": getattr(row, "route_id"),
+        "pair": getattr(row, "pair"),
+        "rpc_latency_ms": getattr(row, "rpc_latency_ms"),
+        "rpc_error_rate_5m": getattr(row, "rpc_error_rate_5m"),
+        "db_latency_ms": getattr(row, "db_latency_ms"),
+        "quote_latency_ms": getattr(row, "quote_latency_ms"),
+        "market_data_staleness_seconds": getattr(row, "market_data_staleness_seconds"),
+        "contract_revert_rate": getattr(row, "contract_revert_rate"),
+        "alert_send_success_rate": getattr(row, "alert_send_success_rate"),
+        "fee_known_status": normalize_fee_confidence(getattr(row, "fee_known_status", "unknown")),
+        "quote_match_status": normalize_quote_match_status(getattr(row, "quote_match_status", "unknown")),
+        "balance_match_status": normalize_balance_confidence(getattr(row, "balance_match_status", "unknown")),
+        "support_status": normalize_support_status(getattr(row, "support_status", "unknown")),
+        "cooldown_active": getattr(row, "cooldown_active"),
+        "paused": getattr(row, "paused"),
+        "metadata_json": getattr(row, "metadata_json", "{}"),
+    }
+
+
 @router.get("/", response_class=HTMLResponse)
 async def dashboard_index(request: Request, session: AsyncSession = Depends(get_async_session)) -> HTMLResponse:
     state: AppState = request.app.state.services
@@ -66,6 +96,7 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
     routes = await repo.list_routes()
     runtime_states = await repo.list_route_runtime_states()
     route_health_rows = await repo.list_latest_route_health_snapshots()
+    route_health_view = [_enrich_route_health_row(row) for row in route_health_rows]
     readiness_rows = await state.readiness_service.route_readiness_rows(repo)
     readiness_summary = await state.readiness_service.readiness_summary(repo)
     blocked_summary = await repo.blocked_reason_summary(since_minutes=120)
@@ -161,9 +192,11 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
     blocked_count = sum(1 for row in opportunities if row.status == "blocked")
     fee_distribution: dict[str, int] = {}
     balance_distribution: dict[str, int] = {}
-    for row in route_health_rows:
-        fee_distribution[row.fee_known_status] = fee_distribution.get(row.fee_known_status, 0) + 1
-        balance_distribution[row.balance_match_status] = balance_distribution.get(row.balance_match_status, 0) + 1
+    for row in route_health_view:
+        fee_status = str(row["fee_known_status"])
+        balance_status = str(row["balance_match_status"])
+        fee_distribution[fee_status] = fee_distribution.get(fee_status, 0) + 1
+        balance_distribution[balance_status] = balance_distribution.get(balance_status, 0) + 1
 
     context = {
         "request": request,
@@ -184,7 +217,7 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
         "global_health": global_health,
         "venue_quote_health": venue_quote_health,
         "runtime_states": runtime_states,
-        "route_health_rows": route_health_rows,
+        "route_health_rows": route_health_view,
         "readiness_rows": readiness_rows,
         "readiness_summary": readiness_summary,
         "backtest_runs": backtest_runs,
