@@ -108,6 +108,8 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
     readiness_summary = await state.readiness_service.readiness_summary(repo)
     commissioning_rows = await state.commissioning_service.commissioning_route_rows(repo)
     commissioning_summary = await state.commissioning_service.commissioning_summary(repo)
+    commissioning_ranking = await state.commissioning_service.commissioning_ranking(repo, limit=10)
+    daily_commissioning_summary = await state.commissioning_service.daily_summary(repo, top_n=5)
     blocked_summary = await repo.blocked_reason_summary(since_minutes=120)
     cooldown_states = [state.risk_manager.get_route_state(route.id) for route in routes]
     global_health = state.health_collector.build_snapshot("global")
@@ -246,6 +248,13 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
     for row in commissioning_rows:
         status = str(row["promotion_gate_status"])
         promotion_gate_distribution[status] = promotion_gate_distribution.get(status, 0) + 1
+    ranking_by_route = {str(item["route_id"]): item for item in commissioning_ranking}
+    route_by_id = {str(item["route_id"]): item for item in commissioning_rows}
+    commissioning_rows_ranked = [route_by_id[item["route_id"]] for item in commissioning_ranking if item["route_id"] in route_by_id]
+    seen_ranked = {str(item["route_id"]) for item in commissioning_rows_ranked}
+    commissioning_rows_ranked.extend(
+        [row for row in commissioning_rows if str(row["route_id"]) not in seen_ranked]
+    )
     eligible_count = sum(1 for row in opportunities if row.status == "eligible")
     blocked_count = sum(1 for row in opportunities if row.status == "blocked")
     fee_distribution: dict[str, int] = {}
@@ -279,7 +288,11 @@ async def dashboard_index(request: Request, session: AsyncSession = Depends(get_
         "readiness_rows": readiness_rows,
         "readiness_summary": readiness_summary,
         "commissioning_rows": commissioning_rows,
+        "commissioning_rows_ranked": commissioning_rows_ranked,
         "commissioning_summary": commissioning_summary,
+        "commissioning_ranking": commissioning_ranking,
+        "commissioning_ranking_by_route": ranking_by_route,
+        "daily_commissioning_summary": daily_commissioning_summary,
         "backtest_runs": backtest_runs,
         "backtest_results": backtest_results,
         "backtest_result_rows": backtest_result_rows,

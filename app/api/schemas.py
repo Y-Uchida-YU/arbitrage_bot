@@ -346,3 +346,17 @@ class CommissioningSummaryOut(BaseModel):
     phase_counts: dict[str, int]
     gate_fail_route_count: int
     gate_warn_route_count: int
+
+
+class CommissioningRankingOut(BaseModel):
+    rank: int
+    route_id: str
+    strategy: str
+    route_type: str
+    phase: str
+    promotion_gate_status: str
+    readiness_grade: str
+    score: Decimal
+    gate_blockers: list[str]
+    human_action_items: list[str]
+    key_kpis: dict[str, Decimal | int]

@@ -504,11 +504,30 @@ def test_commissioning_endpoints_and_dashboard_sections(tmp_path: Path) -> None:
         assert detail.status_code == 200
         assert detail.json()["route_id"] == row["route_id"]
 
+        ranking = client.get("/api/commissioning/ranking")
+        assert ranking.status_code == 200
+        ranking_rows = ranking.json()
+        assert isinstance(ranking_rows, list)
+        assert ranking_rows
+        first_ranked = ranking_rows[0]
+        assert "score" in first_ranked
+        assert "gate_blockers" in first_ranked
+        assert "key_kpis" in first_ranked
+
+        daily_summary = client.get("/api/commissioning/daily-summary")
+        assert daily_summary.status_code == 200
+        daily_body = daily_summary.json()
+        assert "top_blockers" in daily_body
+        assert "best_candidate_routes" in daily_body
+
         dashboard = client.get("/")
         assert dashboard.status_code == 200
         assert "Commissioning Summary" in dashboard.text
         assert "Commissioning Route Gates" in dashboard.text
         assert "Promotion Gate Distribution" in dashboard.text
+        assert "Commissioning Ranking Preview" in dashboard.text
+        assert "Top Blockers (Daily)" in dashboard.text
+        assert "Worst Quote Unavailable Routes" in dashboard.text
 
 
 def test_commissioning_mixed_route_types_use_different_thresholds(tmp_path: Path) -> None:

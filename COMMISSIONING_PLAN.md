@@ -123,3 +123,23 @@ Each KPI is evaluated as `pass`, `warn`, or `fail`.
 
 - Even after readiness review, keep `LIVE_EXECUTION_ENABLED=false` until explicit human sign-off.
 - No automatic live-submit enablement is permitted.
+
+## Daily / Weekly Operations
+
+Daily routine:
+
+- Run `python -m app.main daily-commissioning-summary --format markdown`.
+- Check `review_ready`, `observation_ready`, and `promotion_blocked` counts.
+- Review top blockers and worst quote-unavailable routes.
+- Review best candidate routes and their action items.
+
+Route detail drill-down:
+
+- Run `python -m app.main commissioning-report --route-id <route_id> --format markdown`.
+- Confirm blocker reasons are concrete and actionable.
+
+Weekly routine:
+
+- Compare ranking movement route-by-route.
+- Validate replay/backtest evidence accumulation and KPI trend direction.
+- Reassess threshold assumptions conservatively and document rationale.

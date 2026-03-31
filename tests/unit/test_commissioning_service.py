@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
+
 from app.commissioning.service import CommissioningService
 from app.config.settings import Settings
 from app.models.core import Route
@@ -155,3 +157,79 @@ def test_readiness_red_forces_promotion_blocked() -> None:
 
     assert _kpi_status(row, "readiness_grade") == "fail"
     assert row["promotion_gate_status"] == "promotion_blocked"
+
+
+def test_commissioning_ranking_score_prioritizes_live_intent_without_shadow_lockout() -> None:
+    service = CommissioningService(Settings(), ReadinessService(Settings()))
+    live_row = service._build_route_row(  # noqa: SLF001 - unit coverage for ranking logic
+        _route("hyperevm_dex_dex", "rank-live"),
+        stats=_stats(),
+        readiness=_readiness(),
+    )
+    shadow_row = service._build_route_row(  # noqa: SLF001 - unit coverage for ranking logic
+        _route("base_virtual_shadow", "rank-shadow"),
+        stats=_stats(
+            observation_window_days=Decimal("8"),
+            market_snapshot_count=3200,
+            opportunity_count=220,
+            backtest_run_count_total=2,
+            backtest_run_count_market_snapshots=0,
+            backtest_run_count_opportunities=2,
+        ),
+        readiness=_readiness(readiness_grade="yellow"),
+    )
+    ranked = service._rank_rows([shadow_row, live_row])  # noqa: SLF001 - unit coverage
+
+    assert ranked[0]["route_id"] == "rank-live"
+    assert Decimal(str(ranked[0]["score"])) > Decimal(str(ranked[1]["score"]))
+    assert Decimal(str(ranked[1]["score"])) > Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_daily_summary_aggregation_includes_top_blockers_and_best_candidates() -> None:
+    service = CommissioningService(Settings(), ReadinessService(Settings()))
+    rows = [
+        service._build_route_row(  # noqa: SLF001 - unit coverage
+            _route("hyperevm_dex_dex", "daily-live"),
+            stats=_stats(),
+            readiness=_readiness(),
+        ),
+        service._build_route_row(  # noqa: SLF001 - unit coverage
+            _route("base_virtual_shadow", "daily-shadow"),
+            stats=_stats(
+                observation_window_days=Decimal("2"),
+                market_snapshot_count=10,
+                opportunity_count=5,
+                backtest_run_count_total=0,
+                backtest_run_count_market_snapshots=0,
+                backtest_run_count_opportunities=0,
+                quote_unavailable_rate=Decimal("0.45"),
+            ),
+            readiness=_readiness(readiness_grade="red"),
+        ),
+    ]
+    summary = {
+        "total_routes": 2,
+        "routes_review_ready": 1,
+        "routes_observation_ready": 0,
+        "routes_promotion_blocked": 1,
+        "gate_fail_route_count": 1,
+        "gate_warn_route_count": 1,
+        "latest_backtest_mode": "market_snapshots",
+    }
+
+    async def _fake_rows(_: object) -> list[dict[str, object]]:
+        return rows
+
+    async def _fake_summary(_: object) -> dict[str, object]:
+        return summary
+
+    service.commissioning_route_rows = _fake_rows  # type: ignore[assignment]
+    service.commissioning_summary = _fake_summary  # type: ignore[assignment]
+
+    result = await service.daily_summary(repo=object(), top_n=2)
+
+    assert result["total_routes"] == 2
+    assert result["top_blockers"]
+    assert result["best_candidate_routes"]
+    assert result["quote_unavailable_worst_routes"][0]["route_id"] == "daily-shadow"

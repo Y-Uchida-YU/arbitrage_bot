@@ -85,10 +85,42 @@ Each KPI is evaluated as `pass`, `warn`, or `fail`.
 - `GET /api/commissioning/summary`
 - `GET /api/commissioning/routes`
 - `GET /api/commissioning/routes/{route_id}`
+- `GET /api/commissioning/ranking`
+- `GET /api/commissioning/daily-summary`
+
+## Required CLI
+
+- `python -m app.main commissioning-report`
+- `python -m app.main commissioning-report --route-id <route_id>`
+- `python -m app.main commissioning-report --format json|markdown`
+- `python -m app.main daily-commissioning-summary`
+- `python -m app.main daily-commissioning-summary --format json|markdown`
+- `python -m app.main daily-commissioning-summary --send-discord`
+
+`--send-discord` is explicit-only. There is no automatic per-scan broadcast.
+
+## Ranking Score Intent
+
+Ranking score is explainable and gate-oriented, not profit-maximizing.
+
+Score adds:
+
+- gate progress (`review_ready`, `observation_ready`)
+- readiness quality (`yellow`, `green`)
+- evidence coverage (observation/snapshot/opportunity/backtest completion)
+- moderate visibility bonus for live-intent routes
+
+Score subtracts:
+
+- KPI fail count and warn count
+- high quote-unavailable burden
+- instability signals reflected in blockers and cooldown/fatal metrics
 
 ## Interpretation
 
 - `promotion_blocked` means do not proceed; resolve blockers first.
 - `observation_ready` means shadow observation quality is acceptable, not live approval.
 - `review_ready` means route can be considered in a human review packet.
+- best candidate routes are ranking outputs for human review triage, not auto-promotion.
+- worst quote-unavailable routes are remediation priorities for support/health/adapter work.
 - Even after `review_ready`, live submit remains disabled unless explicitly approved.

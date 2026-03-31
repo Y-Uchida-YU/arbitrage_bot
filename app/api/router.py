@@ -16,6 +16,7 @@ from app.api.schemas import (
     BacktestRunRequest,
     BacktestTradeOut,
     CommissioningRouteOut,
+    CommissioningRankingOut,
     CommissioningSummaryOut,
     CooldownOut,
     ControlRequest,
@@ -219,7 +220,11 @@ async def overview(
     readiness_summary = await state.readiness_service.readiness_summary(repo)
     data["readiness_summary"] = readiness_summary
     commissioning_summary = await state.commissioning_service.commissioning_summary(repo)
+    commissioning_ranking_preview = await state.commissioning_service.commissioning_ranking(repo, limit=5)
+    commissioning_daily_summary = await state.commissioning_service.daily_summary(repo, top_n=5)
     data["commissioning_summary"] = commissioning_summary
+    data["commissioning_ranking_preview"] = commissioning_ranking_preview
+    data["commissioning_daily_summary"] = commissioning_daily_summary
     latest_health_rows = await repo.list_latest_route_health_snapshots()
     fee_distribution: dict[str, int] = {}
     balance_distribution: dict[str, int] = {}
@@ -498,6 +503,34 @@ async def commissioning_summary(
     repo = Repository(session)
     summary = await state.commissioning_service.commissioning_summary(repo)
     return CommissioningSummaryOut.model_validate(summary)
+
+
+@router.get("/commissioning/ranking", response_model=list[CommissioningRankingOut])
+async def commissioning_ranking(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=200),
+    route_id: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_async_session),
+) -> list[CommissioningRankingOut]:
+    state = get_state(request)
+    repo = Repository(session)
+    rows = await state.commissioning_service.commissioning_ranking(
+        repo,
+        limit=limit,
+        route_id=route_id,
+    )
+    return [CommissioningRankingOut.model_validate(row) for row in rows]
+
+
+@router.get("/commissioning/daily-summary")
+async def commissioning_daily_summary(
+    request: Request,
+    top_n: int = Query(default=5, ge=1, le=20),
+    session: AsyncSession = Depends(get_async_session),
+) -> dict[str, object]:
+    state = get_state(request)
+    repo = Repository(session)
+    return await state.commissioning_service.daily_summary(repo, top_n=top_n)
 
 
 @router.get("/blocked-reason-summary")

@@ -124,6 +124,8 @@ Even after switching to live mode, initial implementation keeps real submission 
 - `GET /api/commissioning/summary`
 - `GET /api/commissioning/routes`
 - `GET /api/commissioning/routes/{route_id}`
+- `GET /api/commissioning/ranking`
+- `GET /api/commissioning/daily-summary`
 - `GET /api/blocked-reason-summary`
 - `GET /api/cooldowns`
 - `GET /api/market-snapshots`
@@ -161,6 +163,28 @@ Replay modes:
 - `opportunities` (default, strict): unknown `support_status` stays blocked (`health_unknown`)
 - `opportunities_legacy` (opt-in only): legacy compatibility fallback for old datasets
 - `market_snapshots`: snapshot-driven replay
+
+## Commissioning CLI
+
+Route detail report:
+
+```bash
+python -m app.main commissioning-report
+python -m app.main commissioning-report --route-id <route_id>
+python -m app.main commissioning-report --format json
+python -m app.main commissioning-report --format markdown
+```
+
+Daily summary report:
+
+```bash
+python -m app.main daily-commissioning-summary
+python -m app.main daily-commissioning-summary --format json
+python -m app.main daily-commissioning-summary --format markdown
+python -m app.main daily-commissioning-summary --send-discord
+```
+
+`--send-discord` sends only on explicit command invocation. No per-scan auto-notify is enabled.
 
 ## Canonical Status Vocabulary
 
@@ -230,6 +254,13 @@ Important:
 - Shadow `observation_ready` is not live promotion approval.
 - `review_ready` or readiness `green` never enables live submit automatically.
 - Human sign-off is mandatory and `LIVE_EXECUTION_ENABLED` remains `false` by default.
+
+Ranking score intent:
+
+- prioritize gate attainment and operational stability over raw profitability
+- add points for promotion/readiness progress and minimum evidence coverage
+- subtract points for fail/warn density, quote-unavailable burden, fatal/cooldown instability
+- live-intent routes get a moderate visibility bonus without hard-locking shadow routes to bottom
 
 ## Environment Variables
 

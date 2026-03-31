@@ -65,9 +65,16 @@ class CommissioningService:
         for row in rows:
             phase = str(row["phase"])
             phase_counts[phase] = phase_counts.get(phase, 0) + 1
-            if any(str(item["status"]) == "fail" for item in row["kpi_evaluations"]):  # type: ignore[index]
+            evaluations = row.get("kpi_evaluations", [])
+            if isinstance(evaluations, list) and any(
+                isinstance(item, dict) and str(item.get("status", "")) == "fail"
+                for item in evaluations
+            ):
                 fail_routes += 1
-            if any(str(item["status"]) == "warn" for item in row["kpi_evaluations"]):  # type: ignore[index]
+            if isinstance(evaluations, list) and any(
+                isinstance(item, dict) and str(item.get("status", "")) == "warn"
+                for item in evaluations
+            ):
                 warn_routes += 1
             if str(row["route_type"]) == "live_intent":
                 live_intent += 1
@@ -90,6 +97,74 @@ class CommissioningService:
             "phase_counts": phase_counts,
             "gate_fail_route_count": fail_routes,
             "gate_warn_route_count": warn_routes,
+        }
+
+    async def commissioning_ranking(
+        self,
+        repo: Repository,
+        *,
+        limit: int = 20,
+        route_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        rows = await self.commissioning_route_rows(repo, route_id=route_id)
+        ranked = self._rank_rows(rows)
+        return ranked[:limit]
+
+    async def daily_summary(self, repo: Repository, *, top_n: int = 5) -> dict[str, object]:
+        rows = await self.commissioning_route_rows(repo)
+        summary = await self.commissioning_summary(repo)
+        ranking = self._rank_rows(rows)
+        blockers: dict[str, int] = {}
+        for row in rows:
+            raw_blockers = row.get("gate_blockers", [])
+            if not isinstance(raw_blockers, list):
+                continue
+            for blocker in raw_blockers:
+                key = str(blocker).strip()
+                if not key:
+                    continue
+                blockers[key] = blockers.get(key, 0) + 1
+
+        top_blockers = [
+            {"blocker": name, "count": count}
+            for name, count in sorted(blockers.items(), key=lambda item: item[1], reverse=True)[:top_n]
+        ]
+        worst_quote_routes = sorted(
+            rows,
+            key=lambda item: self._to_decimal(item.get("quote_unavailable_rate")),
+            reverse=True,
+        )[:top_n]
+        readiness_red_routes = [
+            row for row in rows if str(row.get("readiness_grade", "")) == "red"
+        ][:top_n]
+        return {
+            "total_routes": summary["total_routes"],
+            "review_ready_count": summary["routes_review_ready"],
+            "observation_ready_count": summary["routes_observation_ready"],
+            "promotion_blocked_count": summary["routes_promotion_blocked"],
+            "gate_fail_route_count": summary["gate_fail_route_count"],
+            "gate_warn_route_count": summary["gate_warn_route_count"],
+            "top_blockers": top_blockers,
+            "latest_backtest_mode": summary["latest_backtest_mode"],
+            "quote_unavailable_worst_routes": [
+                {
+                    "route_id": row["route_id"],
+                    "strategy": row["strategy"],
+                    "quote_unavailable_rate": row["quote_unavailable_rate"],
+                    "promotion_gate_status": row["promotion_gate_status"],
+                }
+                for row in worst_quote_routes
+            ],
+            "readiness_red_routes": [
+                {
+                    "route_id": row["route_id"],
+                    "strategy": row["strategy"],
+                    "promotion_gate_status": row["promotion_gate_status"],
+                    "gate_blockers": row["gate_blockers"],
+                }
+                for row in readiness_red_routes
+            ],
+            "best_candidate_routes": ranking[:top_n],
         }
 
     def _build_route_row(
@@ -170,7 +245,12 @@ class CommissioningService:
         )
 
         blockers = list(dict.fromkeys(critical_fails + readiness_blockers))
-        actions = list(dict.fromkeys(readiness_actions + [item.note for item in kpis if item.note and item.status != "pass"]))
+        actions = list(
+            dict.fromkeys(
+                readiness_actions
+                + [item.note for item in kpis if item.note and item.status != "pass"]
+            )
+        )
 
         return {
             "route_id": route.id,
@@ -378,6 +458,123 @@ class CommissioningService:
         )
         return kpis
 
+    def _rank_rows(self, rows: list[dict[str, object]]) -> list[dict[str, object]]:
+        ranked_rows = sorted(rows, key=self._score_row, reverse=True)
+        output: list[dict[str, object]] = []
+        for idx, row in enumerate(ranked_rows, start=1):
+            score = self._score_row(row)
+            raw_gate_blockers = row.get("gate_blockers", [])
+            gate_blockers = (
+                [str(item) for item in raw_gate_blockers]
+                if isinstance(raw_gate_blockers, list)
+                else []
+            )
+            raw_actions = row.get("human_action_items", [])
+            human_actions = [str(item) for item in raw_actions] if isinstance(raw_actions, list) else []
+            output.append(
+                {
+                    "rank": idx,
+                    "route_id": row["route_id"],
+                    "strategy": row["strategy"],
+                    "route_type": row["route_type"],
+                    "phase": row["phase"],
+                    "promotion_gate_status": row["promotion_gate_status"],
+                    "readiness_grade": row["readiness_grade"],
+                    "score": score,
+                    "gate_blockers": gate_blockers,
+                    "human_action_items": human_actions,
+                    "key_kpis": {
+                        "observation_window_days": row.get("observation_window_days", Decimal("0")),
+                        "market_snapshot_count": row.get("market_snapshot_count", 0),
+                        "opportunity_count": row.get("opportunity_count", 0),
+                        "quote_unavailable_rate": row.get("quote_unavailable_rate", Decimal("0")),
+                        "backtest_run_count_total": row.get("backtest_run_count_total", 0),
+                        "backtest_run_count_market_snapshots": row.get(
+                            "backtest_run_count_market_snapshots", 0
+                        ),
+                        "backtest_run_count_opportunities": row.get(
+                            "backtest_run_count_opportunities", 0
+                        ),
+                    },
+                }
+            )
+        return output
+
+    def _score_row(self, row: dict[str, object]) -> Decimal:
+        route_type = str(row.get("route_type", "other"))
+        promotion = str(row.get("promotion_gate_status", "not_ready"))
+        readiness = str(row.get("readiness_grade", "red"))
+        evaluations = row.get("kpi_evaluations", [])
+        fail_count = 0
+        warn_count = 0
+        if isinstance(evaluations, list):
+            for item in evaluations:
+                if not isinstance(item, dict):
+                    continue
+                status = str(item.get("status", ""))
+                if status == "fail":
+                    fail_count += 1
+                if status == "warn":
+                    warn_count += 1
+
+        status_points = {
+            "review_ready": Decimal("45"),
+            "observation_ready": Decimal("40"),
+            "not_ready": Decimal("20"),
+            "promotion_blocked": Decimal("5"),
+        }.get(promotion, Decimal("0"))
+        readiness_points = {
+            "green": Decimal("20"),
+            "yellow": Decimal("10"),
+            "red": Decimal("0"),
+        }.get(readiness, Decimal("0"))
+        live_intent_bonus = Decimal("8") if route_type == "live_intent" else Decimal("0")
+
+        thresholds = self._route_thresholds(route_type)
+        observation_ratio = self._completion_ratio(
+            self._to_decimal(row.get("observation_window_days")),
+            thresholds["min_observation_days"],
+        )
+        snapshot_ratio = self._completion_ratio(
+            self._to_decimal(row.get("market_snapshot_count")),
+            thresholds["min_market_snapshots"],
+        )
+        opportunity_ratio = self._completion_ratio(
+            self._to_decimal(row.get("opportunity_count")),
+            thresholds["min_opportunities"],
+        )
+        if route_type == "live_intent":
+            backtest_ratio = (
+                self._completion_ratio(
+                    self._to_decimal(row.get("backtest_run_count_market_snapshots")),
+                    thresholds["min_backtest_market_snapshots"],
+                )
+                + self._completion_ratio(
+                    self._to_decimal(row.get("backtest_run_count_opportunities")),
+                    thresholds["min_backtest_opportunities"],
+                )
+            ) / Decimal("2")
+        else:
+            backtest_ratio = self._completion_ratio(
+                self._to_decimal(row.get("backtest_run_count_total")),
+                thresholds["min_backtest_total"],
+            )
+        completion_bonus = (observation_ratio + snapshot_ratio + opportunity_ratio + backtest_ratio) / Decimal("4")
+        completion_bonus = completion_bonus * Decimal("20")
+
+        fail_penalty = Decimal(fail_count) * Decimal("12")
+        warn_penalty = Decimal(warn_count) * Decimal("4")
+        quote_rate = self._to_decimal(row.get("quote_unavailable_rate"))
+        quote_penalty = min(Decimal("15"), quote_rate * Decimal("200"))
+
+        score = status_points + readiness_points + live_intent_bonus + completion_bonus
+        score = score - fail_penalty - warn_penalty - quote_penalty
+        if score < 0:
+            score = Decimal("0")
+        if score > 100:
+            score = Decimal("100")
+        return score.quantize(Decimal("0.001"))
+
     def _minimum_gate_passed(
         self,
         *,
@@ -479,6 +676,48 @@ class CommissioningService:
         )
         expanded = (base * Decimal("1.5")).quantize(Decimal("0.00001"))
         return min(expanded, Decimal("1"))
+
+    def _route_thresholds(self, route_type: str) -> dict[str, Decimal]:
+        if route_type == "live_intent":
+            return {
+                "min_observation_days": Decimal(self.settings.commissioning_live_min_observation_days),
+                "min_market_snapshots": Decimal(self.settings.commissioning_live_min_market_snapshots),
+                "min_opportunities": Decimal(self.settings.commissioning_live_min_opportunities),
+                "min_backtest_market_snapshots": Decimal(
+                    self.settings.commissioning_live_min_backtest_runs_market_snapshots
+                ),
+                "min_backtest_opportunities": Decimal(
+                    self.settings.commissioning_live_min_backtest_runs_opportunities
+                ),
+                "min_backtest_total": Decimal("0"),
+            }
+        return {
+            "min_observation_days": Decimal(self.settings.commissioning_shadow_min_observation_days),
+            "min_market_snapshots": Decimal(self.settings.commissioning_shadow_min_market_snapshots),
+            "min_opportunities": Decimal(self.settings.commissioning_shadow_min_opportunities),
+            "min_backtest_market_snapshots": Decimal("0"),
+            "min_backtest_opportunities": Decimal("0"),
+            "min_backtest_total": Decimal(self.settings.commissioning_shadow_min_backtest_runs_total),
+        }
+
+    @staticmethod
+    def _completion_ratio(value: Decimal, required: Decimal) -> Decimal:
+        if required <= 0:
+            return Decimal("1")
+        ratio = value / required
+        if ratio < 0:
+            return Decimal("0")
+        return min(ratio, Decimal("1"))
+
+    @staticmethod
+    def _to_decimal(raw: object) -> Decimal:
+        if isinstance(raw, Decimal):
+            return raw
+        if isinstance(raw, int):
+            return Decimal(raw)
+        if isinstance(raw, float):
+            return Decimal(str(raw))
+        return Decimal(str(raw or "0"))
 
     @staticmethod
     def _minimum_kpi(

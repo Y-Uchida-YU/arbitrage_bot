@@ -161,6 +161,65 @@
     </article>
 
     <article class="card half">
+      <h3>Top Blockers (Daily)</h3>
+      <table>
+        <thead><tr><th>Blocker</th><th>Count</th></tr></thead>
+        <tbody>
+          {% if daily_commissioning_summary is defined and daily_commissioning_summary.top_blockers %}
+            {% for row in daily_commissioning_summary.top_blockers %}
+              <tr><td>{{ row.blocker }}</td><td class="mono">{{ row.count }}</td></tr>
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="2">none</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card half">
+      <h3>Worst Quote Unavailable Routes</h3>
+      <table>
+        <thead><tr><th>Route</th><th>Strategy</th><th>Rate</th><th>Gate</th></tr></thead>
+        <tbody>
+          {% if daily_commissioning_summary is defined and daily_commissioning_summary.quote_unavailable_worst_routes %}
+            {% for row in daily_commissioning_summary.quote_unavailable_worst_routes %}
+              <tr>
+                <td class="mono">{{ row.route_id }}</td>
+                <td>{{ row.strategy }}</td>
+                <td class="mono">{{ row.quote_unavailable_rate }}</td>
+                <td>{{ row.promotion_gate_status }}</td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="4">none</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card half">
+      <h3>Best Candidate Routes</h3>
+      <table>
+        <thead><tr><th>Rank</th><th>Route</th><th>Strategy</th><th>Score</th><th>Gate</th></tr></thead>
+        <tbody>
+          {% if daily_commissioning_summary is defined and daily_commissioning_summary.best_candidate_routes %}
+            {% for row in daily_commissioning_summary.best_candidate_routes %}
+              <tr>
+                <td class="mono">{{ row.rank }}</td>
+                <td class="mono">{{ row.route_id }}</td>
+                <td>{{ row.strategy }}</td>
+                <td class="mono">{{ row.score }}</td>
+                <td>{{ row.promotion_gate_status }}</td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="5">none</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card half">
       <h3>Cooldown / Failure State</h3>
       <table>
         <thead><tr><th>Route</th><th>Cooldown(s)</th><th>Fail</th><th>Loss</th><th>Fatal</th><th>Category</th></tr></thead>
@@ -280,10 +339,13 @@
     <article class="card wide">
       <h3>Commissioning Route Gates</h3>
       <table>
-        <thead><tr><th>Route</th><th>Type</th><th>Phase</th><th>Readiness</th><th>Gate</th><th>Obs Days</th><th>Snapshots</th><th>Opps</th><th>Quote Unavail</th><th>Backtests</th><th>Blockers</th><th>Action</th></tr></thead>
+        <thead><tr><th>Rank</th><th>Score</th><th>Route</th><th>Type</th><th>Phase</th><th>Readiness</th><th>Gate</th><th>Obs Days</th><th>Snapshots</th><th>Opps</th><th>Quote Unavail</th><th>Backtests</th><th>Blockers</th><th>Action</th></tr></thead>
         <tbody>
-          {% for row in commissioning_rows %}
+          {% for row in commissioning_rows_ranked %}
+            {% set rank_row = commissioning_ranking_by_route.get(row.route_id) if commissioning_ranking_by_route is defined else None %}
             <tr>
+              <td class="mono">{{ rank_row.rank if rank_row else '-' }}</td>
+              <td class="mono">{{ rank_row.score if rank_row else '-' }}</td>
               <td class="mono">{{ row.route_id }}</td>
               <td>{{ row.route_type }}</td>
               <td>{{ row.phase }}</td>
@@ -296,6 +358,28 @@
               <td class="mono">{{ row.backtest_run_count_total }} (snap={{ row.backtest_run_count_market_snapshots }}, opp={{ row.backtest_run_count_opportunities }})</td>
               <td>{{ row.gate_blockers|join(', ') }}</td>
               <td>{{ row.human_action_items[0] if row.human_action_items else '-' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card wide">
+      <h3>Commissioning Ranking Preview</h3>
+      <table>
+        <thead><tr><th>Rank</th><th>Route</th><th>Strategy</th><th>Type</th><th>Phase</th><th>Score</th><th>Gate</th><th>Readiness</th><th>Blockers</th></tr></thead>
+        <tbody>
+          {% for row in commissioning_ranking %}
+            <tr>
+              <td class="mono">{{ row.rank }}</td>
+              <td class="mono">{{ row.route_id }}</td>
+              <td>{{ row.strategy }}</td>
+              <td>{{ row.route_type }}</td>
+              <td>{{ row.phase }}</td>
+              <td class="mono">{{ row.score }}</td>
+              <td>{{ row.promotion_gate_status }}</td>
+              <td>{{ row.readiness_grade }}</td>
+              <td>{{ row.gate_blockers|join(', ') }}</td>
             </tr>
           {% endfor %}
         </tbody>
