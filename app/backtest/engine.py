@@ -71,6 +71,7 @@ class BacktestEngine:
                     params=params,
                 )
             else:
+                legacy_support_fallback = mode == "opportunities_legacy"
                 rows = await repo.list_opportunities_for_backtest(
                     strategy=strategy,
                     route_id=route_id,
@@ -84,6 +85,7 @@ class BacktestEngine:
                     route_id=route_id,
                     rows=rows,
                     params=params,
+                    legacy_support_fallback=legacy_support_fallback,
                 )
 
             metadata = {
@@ -160,6 +162,7 @@ class BacktestEngine:
         route_id: str,
         rows: list[Opportunity],
         params: dict[str, object],
+        legacy_support_fallback: bool,
     ) -> dict[str, object]:
         signals = len(rows)
         eligible_count = 0
@@ -202,6 +205,7 @@ class BacktestEngine:
                 max_quote_age=max_quote_age,
                 liquidity_cap_ratio=liquidity_cap_ratio,
                 params=params,
+                legacy_support_fallback=legacy_support_fallback,
             )
             fee_distribution[fee_status] = fee_distribution.get(fee_status, 0) + 1
             balance_distribution[balance_status] = balance_distribution.get(balance_status, 0) + 1
@@ -499,6 +503,8 @@ class BacktestEngine:
         value = raw.strip().lower()
         if value in {"market_snapshots", "market-snapshots", "snapshot", "snapshots"}:
             return "market_snapshots"
+        if value in {"opportunities_legacy", "opportunities-legacy", "legacy"}:
+            return "opportunities_legacy"
         return "opportunities"
 
     @staticmethod
@@ -517,6 +523,7 @@ class BacktestEngine:
         max_quote_age: Decimal,
         liquidity_cap_ratio: Decimal,
         params: dict[str, object],
+        legacy_support_fallback: bool,
     ) -> tuple[str, str, str, bool]:
         fee_status = normalize_fee_confidence(
             payload.get("fee_known_status"),
@@ -537,7 +544,7 @@ class BacktestEngine:
         if quote_match_status == "unknown":
             quote_match_status = normalize_quote_match_status(payload.get("quote_match"))
         quote_unavailable = str(payload.get("quote_unavailable", "false")).lower() == "true"
-        if support_status == "unknown" and not quote_unavailable:
+        if legacy_support_fallback and support_status == "unknown" and not quote_unavailable:
             # Opportunities replay is legacy-friendly; quote_unavailable=false historically implied supported route.
             support_status = "supported"
         if quote_unavailable or support_status == "unsupported":

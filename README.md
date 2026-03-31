@@ -153,6 +153,12 @@ python -m app.main backtest \
   --replay-mode market_snapshots
 ```
 
+Replay modes:
+
+- `opportunities` (default, strict): unknown `support_status` stays blocked (`health_unknown`)
+- `opportunities_legacy` (opt-in only): legacy compatibility fallback for old datasets
+- `market_snapshots`: snapshot-driven replay
+
 ## Canonical Status Vocabulary
 
 - Support status (`support_status`) canonical values:
@@ -167,6 +173,18 @@ python -m app.main backtest \
 - Legacy values (`good/bad/true/false/1/0/yes/no`) are normalized to canonical values at read/write paths.
 - Unknown or unverified confidence is blocked for tradability and surfaced in readiness blockers.
 - `green` readiness grade is still not permission to enable live submit; human review remains mandatory.
+
+## Readiness Policy (Strategy-Aware)
+
+- `readiness_summary.latest_backtest_mode` is sourced from the latest stored backtest result/run metadata, independent of observation timestamps.
+- `hyperevm_dex_dex` (live-intent readiness):
+  - strict fee/balance requirements (`venue_declared`+, `wallet_verified`+)
+  - `quote_match_status=matched` required
+  - fatal pause or missing backtest keeps route `red`
+- `base_virtual_shadow` (observation readiness):
+  - support must still be `supported`
+  - fee/balance thresholds are observation-aware (`fallback_only`+, `internal_ok`+)
+  - route is intentionally treated as observation-only (typically `yellow`, not auto-promoted to live-intent `green`)
 
 ## Environment Variables
 
@@ -192,6 +210,9 @@ High-impact variables:
 - `LIVE_MIN_FEE_CONFIDENCE_STATUS`
 - `LIVE_MIN_BALANCE_CONFIDENCE_STATUS`
 - `LIVE_MIN_QUOTE_MATCH_STATUS`
+- `SHADOW_MIN_FEE_CONFIDENCE_FOR_READINESS`
+- `SHADOW_MIN_BALANCE_CONFIDENCE_FOR_READINESS`
+- `SHADOW_MIN_QUOTE_MATCH_FOR_READINESS`
 - `BALANCE_VERIFY_TOLERANCE_ABS`
 - `BALANCE_VERIFY_TOLERANCE_RATIO`
 - `HYPEREVM_WALLET_ADDRESS`

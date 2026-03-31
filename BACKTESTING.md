@@ -20,6 +20,10 @@ Backtesting is event-driven replay over persisted observations.
 - `opportunities`
   - Re-evaluates persisted opportunity rows.
   - Fast sanity/repro mode for threshold changes.
+  - Default is strict: unknown `support_status` remains blocked (`health_unknown`).
+- `opportunities_legacy`
+  - Explicit opt-in compatibility mode for legacy datasets.
+  - Allows legacy support fallback only in this mode.
 - `market_snapshots`
   - Reconstructs route events from raw-ish observation rows (`leg_b` snapshots + latest route health state).
   - Better for commissioning truthfulness checks and readiness scoring.
@@ -61,6 +65,18 @@ python -m app.main backtest \
   --end-ts 2026-03-30T00:00:00+00:00 \
   --parameter-set-id <optional_parameter_set_id> \
   --replay-mode market_snapshots
+```
+
+For legacy rescue replay (opt-in only):
+
+```bash
+python -m app.main backtest \
+  --strategy hyperevm_dex_dex \
+  --route-id <route_id> \
+  --pair USDC/USDt0 \
+  --start-ts 2026-03-29T00:00:00+00:00 \
+  --end-ts 2026-03-30T00:00:00+00:00 \
+  --replay-mode opportunities_legacy
 ```
 
 ## Running Backtest (API)

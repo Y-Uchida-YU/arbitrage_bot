@@ -13,6 +13,7 @@ from app.utils.confidence import (
     normalize_fee_confidence,
     normalize_quote_match_status,
     normalize_support_status,
+    quote_match_status_at_least,
 )
 
 
@@ -38,15 +39,7 @@ class ReadinessService:
         red = sum(1 for row in rows if row["readiness_grade"] == "red")
         yellow = sum(1 for row in rows if row["readiness_grade"] == "yellow")
         green = sum(1 for row in rows if row["readiness_grade"] == "green")
-
-        last_mode = "none"
-        ordered = sorted(
-            rows,
-            key=lambda x: self._as_utc(x["last_observation_at"]) or datetime.fromtimestamp(0, tz=timezone.utc),
-            reverse=True,
-        )
-        if ordered:
-            last_mode = str(ordered[0].get("last_backtest_mode", "none"))
+        last_mode = await repo.latest_backtest_mode()
 
         return {
             "red_count": red,
@@ -78,6 +71,7 @@ class ReadinessService:
             cooldown_active = cooldown_active or bool(latest_health.cooldown_active)
 
         blockers, actions = self._build_blockers_and_actions(
+            strategy=route.strategy,
             support_status=support_status,
             fee_status=fee_status,
             balance_status=balance_status,
@@ -88,7 +82,7 @@ class ReadinessService:
             backtest_run_count=int(backtest_stats["backtest_run_count"]),
             quote_unavailable_rate=Decimal(opp_stats["quote_unavailable_rate"]),
         )
-        grade = self._grade_from_blockers(blockers)
+        grade = self._grade_from_blockers(route.strategy, blockers)
 
         return {
             "route_id": route.id,
@@ -115,6 +109,7 @@ class ReadinessService:
     def _build_blockers_and_actions(
         self,
         *,
+        strategy: str,
         support_status: str,
         fee_status: str,
         balance_status: str,
@@ -127,20 +122,36 @@ class ReadinessService:
     ) -> tuple[list[str], list[str]]:
         blockers: list[str] = []
         actions: list[str] = []
+        is_shadow = strategy == "base_virtual_shadow"
+        min_fee_status = (
+            self.settings.shadow_min_fee_confidence_for_readiness if is_shadow else "venue_declared"
+        )
+        min_balance_status = (
+            self.settings.shadow_min_balance_confidence_for_readiness if is_shadow else "wallet_verified"
+        )
+        min_quote_status = (
+            self.settings.shadow_min_quote_match_for_readiness if is_shadow else "matched"
+        )
 
         if support_status != "supported":
             blockers.append("unsupported_route")
             actions.append("Resolve adapter/quoter support and eliminate quote_unavailable before readiness review.")
-        if not fee_confidence_at_least(fee_status, "venue_declared"):
+        if not fee_confidence_at_least(fee_status, min_fee_status):
             blockers.append("fee_unverified")
-            actions.append("Collect venue/account or chain-verified fee provenance for this route.")
+            if is_shadow:
+                actions.append("Increase fee provenance confidence for shadow observation quality.")
+            else:
+                actions.append("Collect venue/account or chain-verified fee provenance for this route.")
         if balance_status == "mismatch":
             blockers.append("balance_mismatch")
             actions.append("Investigate balance drift and reconcile DB/inventory/wallet state.")
-        elif not balance_confidence_at_least(balance_status, "wallet_verified"):
+        elif not balance_confidence_at_least(balance_status, min_balance_status):
             blockers.append("balance_unverified")
-            actions.append("Add wallet/venue balance verification and keep drift checks green.")
-        if quote_match_status != "matched":
+            if is_shadow:
+                actions.append("Keep inventory checks at least internal/db-consistent for observation readiness.")
+            else:
+                actions.append("Add wallet/venue balance verification and keep drift checks green.")
+        if not quote_match_status_at_least(quote_match_status, min_quote_status):
             blockers.append("quote_match_unverified")
             actions.append("Stabilize quote consistency checks to avoid unknown/mismatch states.")
         if observation_count < 20:
@@ -158,6 +169,9 @@ class ReadinessService:
         if fatal_paused:
             blockers.append("fatal_paused")
             actions.append("Keep route paused until fatal failure category is resolved and re-tested.")
+        if is_shadow:
+            blockers.append("observation_only_route")
+            actions.append("Shadow routes are observation-readiness only; live-intent gate is not applicable.")
 
         dedup_actions: list[str] = []
         seen: set[str] = set()
@@ -170,17 +184,29 @@ class ReadinessService:
         return blockers, dedup_actions
 
     @staticmethod
-    def _grade_from_blockers(blockers: list[str]) -> str:
+    def _grade_from_blockers(strategy: str, blockers: list[str]) -> str:
         if not blockers:
             return "green"
-        critical = {
-            "unsupported_route",
-            "fee_unverified",
-            "balance_mismatch",
-            "balance_unverified",
-            "backtest_missing",
-            "fatal_paused",
-        }
+        if strategy == "base_virtual_shadow":
+            critical = {
+                "unsupported_route",
+                "fee_unverified",
+                "balance_mismatch",
+                "balance_unverified",
+                "quote_match_unverified",
+                "backtest_missing",
+                "fatal_paused",
+            }
+        else:
+            critical = {
+                "unsupported_route",
+                "fee_unverified",
+                "balance_mismatch",
+                "balance_unverified",
+                "quote_match_unverified",
+                "backtest_missing",
+                "fatal_paused",
+            }
         if any(blocker in critical for blocker in blockers):
             return "red"
         return "yellow"

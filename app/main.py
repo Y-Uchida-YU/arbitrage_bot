@@ -129,7 +129,7 @@ def run() -> None:
         "--replay-mode",
         required=False,
         default="opportunities",
-        choices=["opportunities", "market_snapshots"],
+        choices=["opportunities", "opportunities_legacy", "market_snapshots"],
     )
 
     args = parser.parse_args()

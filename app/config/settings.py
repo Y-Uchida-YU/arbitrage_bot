@@ -141,6 +141,9 @@ class Settings(BaseSettings):
     shadow_max_slippage_bps: int = 10
     shadow_notional_usdc: Decimal = Decimal("100")
     shadow_stale_quote_seconds: int = 5
+    shadow_min_fee_confidence_for_readiness: str = "fallback_only"
+    shadow_min_balance_confidence_for_readiness: str = "internal_ok"
+    shadow_min_quote_match_for_readiness: str = "matched"
 
     # Fee fallback (bps)
     bybit_maker_fee_bps_fallback: int = 10
@@ -197,6 +200,33 @@ class Settings(BaseSettings):
     @field_validator("live_min_quote_match_status", mode="before")
     @classmethod
     def _normalize_quote_match_status(cls, value: str) -> str:
+        allowed = {"unknown", "mismatch", "matched"}
+        normalized = str(value).strip().lower()
+        if normalized not in allowed:
+            return "matched"
+        return normalized
+
+    @field_validator("shadow_min_fee_confidence_for_readiness", mode="before")
+    @classmethod
+    def _normalize_shadow_fee_confidence_status(cls, value: str) -> str:
+        allowed = {"unknown", "fallback_only", "config_only", "venue_declared", "acct_verified", "chain_verified"}
+        normalized = str(value).strip().lower()
+        if normalized not in allowed:
+            return "fallback_only"
+        return normalized
+
+    @field_validator("shadow_min_balance_confidence_for_readiness", mode="before")
+    @classmethod
+    def _normalize_shadow_balance_confidence_status(cls, value: str) -> str:
+        allowed = {"unknown", "mismatch", "internal_ok", "db_inventory_ok", "wallet_verified", "venue_verified"}
+        normalized = str(value).strip().lower()
+        if normalized not in allowed:
+            return "internal_ok"
+        return normalized
+
+    @field_validator("shadow_min_quote_match_for_readiness", mode="before")
+    @classmethod
+    def _normalize_shadow_quote_match_status(cls, value: str) -> str:
         allowed = {"unknown", "mismatch", "matched"}
         normalized = str(value).strip().lower()
         if normalized not in allowed:

@@ -46,6 +46,7 @@ async def test_backtest_result_aggregation_and_parameter_set_application() -> No
                 "quote_match": "true",
                 "quote_match_status": "matched",
                 "balance_match_status": "internal_ok",
+                "support_status": "supported",
                 "smaller_pool_liquidity_usdc": "500000",
                 "initial_amount": "100",
             },
@@ -346,5 +347,147 @@ async def test_market_snapshot_replay_normalizes_legacy_statuses() -> None:
         assert result["status"] == "completed"
         assert int(result["blocked_count"]) >= 1
         assert result["blocked_reasons"].get("quote_unavailable", 0) >= 1
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_opportunities_replay_default_keeps_unknown_support_blocked() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = Settings()
+    bt = BacktestEngine(settings)
+
+    async with session_factory() as session:
+        repo = Repository(session)
+        await repo.seed_defaults()
+        route = (await repo.get_routes(strategy="hyperevm_dex_dex", enabled_only=False))[0]
+        now = datetime.now(timezone.utc)
+
+        payload = json.dumps(
+            {
+                "quote_unavailable": "false",
+                "fee_known_status": "chain_verified",
+                "quote_match_status": "matched",
+                "balance_match_status": "wallet_verified",
+                "support_status": "unknown",
+                "smaller_pool_liquidity_usdc": "500000",
+                "initial_amount": "100",
+            },
+            sort_keys=True,
+        )
+        session.add(
+            Opportunity(
+                run_id=_id("run"),
+                idempotency_key=_id("opp"),
+                timestamp=now,
+                strategy=route.strategy,
+                mode="paper",
+                pair=route.pair,
+                direction=route.direction,
+                route_id=route.id,
+                venues=f"{route.venue_a}->{route.venue_b}",
+                raw_edge_bps=Decimal("40"),
+                modeled_edge_bps=Decimal("45"),
+                expected_pnl_abs=Decimal("1.2"),
+                expected_slippage_bps=Decimal("1"),
+                gas_estimate_usdc=Decimal("0.01"),
+                quote_age_seconds=Decimal("1"),
+                status="eligible",
+                blocked_reason="",
+                pool_health_ok=True,
+                persisted_seconds=Decimal("10"),
+                payload_json=payload,
+            )
+        )
+        await session.commit()
+
+        result = await bt.run(
+            repo,
+            strategy=route.strategy,
+            route_id=route.id,
+            pair=route.pair,
+            start_ts=now - timedelta(minutes=1),
+            end_ts=now + timedelta(minutes=1),
+            parameter_set_id=None,
+            notes="default opp replay",
+            replay_mode="opportunities",
+        )
+        assert result["status"] == "completed"
+        assert result["blocked_reasons"].get("health_unknown", 0) >= 1
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_opportunities_legacy_replay_opt_in_allows_unknown_support_fallback() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = Settings()
+    bt = BacktestEngine(settings)
+
+    async with session_factory() as session:
+        repo = Repository(session)
+        await repo.seed_defaults()
+        route = (await repo.get_routes(strategy="hyperevm_dex_dex", enabled_only=False))[0]
+        now = datetime.now(timezone.utc)
+
+        payload = json.dumps(
+            {
+                "quote_unavailable": "false",
+                "fee_known_status": "chain_verified",
+                "quote_match_status": "matched",
+                "balance_match_status": "wallet_verified",
+                "support_status": "unknown",
+                "smaller_pool_liquidity_usdc": "500000",
+                "initial_amount": "100",
+            },
+            sort_keys=True,
+        )
+        session.add(
+            Opportunity(
+                run_id=_id("run"),
+                idempotency_key=_id("opp"),
+                timestamp=now,
+                strategy=route.strategy,
+                mode="paper",
+                pair=route.pair,
+                direction=route.direction,
+                route_id=route.id,
+                venues=f"{route.venue_a}->{route.venue_b}",
+                raw_edge_bps=Decimal("40"),
+                modeled_edge_bps=Decimal("45"),
+                expected_pnl_abs=Decimal("1.2"),
+                expected_slippage_bps=Decimal("1"),
+                gas_estimate_usdc=Decimal("0.01"),
+                quote_age_seconds=Decimal("1"),
+                status="eligible",
+                blocked_reason="",
+                pool_health_ok=True,
+                persisted_seconds=Decimal("10"),
+                payload_json=payload,
+            )
+        )
+        await session.commit()
+
+        result = await bt.run(
+            repo,
+            strategy=route.strategy,
+            route_id=route.id,
+            pair=route.pair,
+            start_ts=now - timedelta(minutes=1),
+            end_ts=now + timedelta(minutes=1),
+            parameter_set_id=None,
+            notes="legacy opp replay",
+            replay_mode="opportunities_legacy",
+        )
+        assert result["status"] == "completed"
+        assert result["blocked_reasons"].get("health_unknown", 0) == 0
 
     await engine.dispose()

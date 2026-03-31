@@ -34,6 +34,7 @@ Use this checklist before any decision to enable real submit path.
 - [ ] Route health observations are persisted (`route_health_snapshots`).
 - [ ] Blocked reason summary is explainable for recent N days.
 - [ ] Dashboard/API expose cooldown and fatal-paused routes.
+- [ ] `readiness_summary.latest_backtest_mode` is derived from latest backtest run/result (not latest observation route).
 
 ## Replay / Backtest Evidence
 
@@ -47,6 +48,7 @@ Use this checklist before any decision to enable real submit path.
 
 - [ ] Route-by-route supported/unsupported status is documented.
 - [ ] Fee-known / quote-match / balance-match status is visible per route.
+- [ ] Readiness logic is strategy-aware: live-intent routes stay strict, shadow routes use observation thresholds.
 - [ ] Depeg, gas spike, RPC failure, liquidity deterioration guards are validated.
 - [ ] Readiness API and dashboard blockers are explainable for each non-green route.
 

@@ -365,3 +365,110 @@ def test_route_health_and_readiness_return_canonical_statuses(tmp_path: Path) ->
             assert row["fee_known_status"] in fee_allowed
             assert row["balance_match_status"] in balance_allowed
             assert row["quote_match_status"] in quote_allowed
+
+
+def test_readiness_summary_uses_latest_backtest_mode(tmp_path: Path) -> None:
+    with _boot_client(tmp_path, live_enabled=False, use_mock_market_data=True) as client:
+        time.sleep(1.5)
+        routes = client.get("/api/routes")
+        assert routes.status_code == 200
+        route_rows = routes.json()
+        assert len(route_rows) >= 2
+
+        now = datetime.now(timezone.utc)
+        payload_a = {
+            "token": "test-control-token",
+            "strategy": route_rows[0]["strategy"],
+            "route_id": route_rows[0]["id"],
+            "pair": route_rows[0]["pair"],
+            "start_ts": (now - timedelta(hours=1)).isoformat(),
+            "end_ts": (now + timedelta(minutes=1)).isoformat(),
+            "notes": "summary mode test a",
+            "replay_mode": "opportunities",
+        }
+        run_a = client.post("/api/backtest/run", json=payload_a)
+        assert run_a.status_code == 200
+        assert run_a.json()["status"] == "completed"
+
+        payload_b = {
+            "token": "test-control-token",
+            "strategy": route_rows[1]["strategy"],
+            "route_id": route_rows[1]["id"],
+            "pair": route_rows[1]["pair"],
+            "start_ts": (now - timedelta(hours=1)).isoformat(),
+            "end_ts": (now + timedelta(minutes=1)).isoformat(),
+            "notes": "summary mode test b",
+            "replay_mode": "market_snapshots",
+        }
+        run_b = client.post("/api/backtest/run", json=payload_b)
+        assert run_b.status_code == 200
+        assert run_b.json()["status"] == "completed"
+
+        summary = client.get("/api/readiness/summary")
+        assert summary.status_code == 200
+        assert summary.json()["latest_backtest_mode"] == "market_snapshots"
+
+
+def test_backtest_api_supports_legacy_replay_mode_opt_in(tmp_path: Path) -> None:
+    with _boot_client(tmp_path, live_enabled=False, use_mock_market_data=True) as client:
+        time.sleep(1.5)
+        routes = client.get("/api/routes")
+        assert routes.status_code == 200
+        route = routes.json()[0]
+        now = datetime.now(timezone.utc)
+        payload = {
+            "token": "test-control-token",
+            "strategy": route["strategy"],
+            "route_id": route["id"],
+            "pair": route["pair"],
+            "start_ts": (now - timedelta(hours=1)).isoformat(),
+            "end_ts": (now + timedelta(minutes=1)).isoformat(),
+            "notes": "legacy replay mode api test",
+            "replay_mode": "opportunities_legacy",
+        }
+        run = client.post("/api/backtest/run", json=payload)
+        assert run.status_code == 200
+        body = run.json()
+        assert body["status"] == "completed"
+        assert body["replay_mode"] == "opportunities_legacy"
+
+
+def test_shadow_route_can_be_yellow_not_forced_red(tmp_path: Path) -> None:
+    with _boot_client(tmp_path, live_enabled=False, use_mock_market_data=True) as client:
+        time.sleep(2.0)
+        routes = client.get("/api/routes")
+        assert routes.status_code == 200
+        route_rows = routes.json()
+        shadow_routes = [row for row in route_rows if row["strategy"] == "base_virtual_shadow"]
+        assert shadow_routes
+        target = shadow_routes[0]
+
+        now = datetime.now(timezone.utc)
+        run = client.post(
+            "/api/backtest/run",
+            json={
+                "token": "test-control-token",
+                "strategy": target["strategy"],
+                "route_id": target["id"],
+                "pair": target["pair"],
+                "start_ts": (now - timedelta(hours=1)).isoformat(),
+                "end_ts": (now + timedelta(minutes=1)).isoformat(),
+                "notes": "shadow readiness test",
+                "replay_mode": "opportunities",
+            },
+        )
+        assert run.status_code == 200
+        assert run.json()["status"] == "completed"
+
+        found_yellow = False
+        for _ in range(80):
+            readiness = client.get("/api/readiness/routes")
+            assert readiness.status_code == 200
+            rows = readiness.json()
+            candidate = next((row for row in rows if row["route_id"] == target["id"]), None)
+            if candidate and int(candidate["observation_count"]) >= 20 and candidate["readiness_grade"] == "yellow":
+                found_yellow = True
+                break
+            time.sleep(0.25)
+
+        assert found_yellow

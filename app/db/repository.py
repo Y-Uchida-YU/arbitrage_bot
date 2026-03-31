@@ -764,6 +764,23 @@ class Repository:
             "last_backtest_mode": replay_mode,
         }
 
+    async def latest_backtest_mode(self) -> str:
+        latest_result = await self.session.scalar(
+            select(BacktestResult).order_by(BacktestResult.created_at.desc()).limit(1)
+        )
+        if latest_result is not None:
+            payload = self._safe_json(latest_result.metadata_json)
+            mode = str(payload.get("replay_mode", "")).strip().lower()
+            return mode or "unknown"
+
+        latest_run = await self.session.scalar(
+            select(BacktestRun).order_by(BacktestRun.created_at.desc()).limit(1)
+        )
+        if latest_run is None:
+            return "none"
+
+        return self._extract_replay_mode_from_notes(latest_run.notes)
+
     async def blocked_reason_summary(self, since_minutes: int = 60) -> list[dict[str, object]]:
         since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
         rows = await self.session.execute(
@@ -1078,6 +1095,16 @@ class Repository:
         except Exception:
             return {}
         return {}
+
+    @staticmethod
+    def _extract_replay_mode_from_notes(notes: str) -> str:
+        for part in notes.split("|"):
+            candidate = part.strip()
+            if not candidate.lower().startswith("replay_mode="):
+                continue
+            value = candidate.split("=", 1)[1].strip().lower()
+            return value or "unknown"
+        return "unknown"
 
     async def write_config_audit(
         self,
