@@ -533,10 +533,15 @@ def test_commissioning_endpoints_and_dashboard_sections(tmp_path: Path) -> None:
 def test_commissioning_mixed_route_types_use_different_thresholds(tmp_path: Path) -> None:
     extra_env = {
         "COMMISSIONING_SHADOW_MIN_OBSERVATION_DAYS": "0",
-        "COMMISSIONING_SHADOW_MIN_MARKET_SNAPSHOTS": "1",
+        # In mock market mode, commissioning real-observation snapshot count stays 0.
+        # Keep this test focused on route-type threshold differences.
+        "COMMISSIONING_SHADOW_MIN_MARKET_SNAPSHOTS": "0",
         "COMMISSIONING_SHADOW_MIN_OPPORTUNITIES": "1",
         "COMMISSIONING_SHADOW_MIN_BACKTEST_RUNS_TOTAL": "1",
         "COMMISSIONING_SHADOW_MAX_QUOTE_UNAVAILABLE_RATE": "0.20",
+        # Startup health_unknown opportunities are expected in short integration windows.
+        "COMMISSIONING_WARN_HEALTH_UNKNOWN_RATE": "1.00",
+        "COMMISSIONING_FAIL_HEALTH_UNKNOWN_RATE": "1.00",
         "COMMISSIONING_LIVE_MIN_OBSERVATION_DAYS": "14",
         "COMMISSIONING_LIVE_MIN_MARKET_SNAPSHOTS": "5000",
         "COMMISSIONING_LIVE_MIN_OPPORTUNITIES": "300",

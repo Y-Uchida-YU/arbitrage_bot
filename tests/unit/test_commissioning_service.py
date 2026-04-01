@@ -128,6 +128,27 @@ def test_quote_unavailable_warn_zone_is_not_ready() -> None:
     assert row["promotion_gate_status"] == "not_ready"
 
 
+def test_shadow_snapshot_and_health_unknown_fail_blocks_observation_ready() -> None:
+    service = CommissioningService(Settings(), ReadinessService(Settings()))
+    row = service._build_route_row(  # noqa: SLF001 - unit coverage for gate logic
+        _route("base_virtual_shadow", "r-shadow-health-unknown"),
+        stats=_stats(
+            observation_window_days=Decimal("8"),
+            market_snapshot_count=0,
+            opportunity_count=50,
+            backtest_run_count_total=2,
+            backtest_run_count_market_snapshots=0,
+            backtest_run_count_opportunities=2,
+            health_unknown_rate=Decimal("0.50"),
+        ),
+        readiness=_readiness(readiness_grade="yellow"),
+    )
+
+    assert _kpi_status(row, "market_snapshot_count") == "fail"
+    assert _kpi_status(row, "health_unknown_rate") == "fail"
+    assert row["promotion_gate_status"] == "promotion_blocked"
+
+
 def test_backtest_count_shortfall_is_fail() -> None:
     service = CommissioningService(Settings(), ReadinessService(Settings()))
     row = service._build_route_row(  # noqa: SLF001 - unit coverage for gate logic
